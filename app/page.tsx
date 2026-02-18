@@ -1,46 +1,56 @@
+// app/page.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
-import { MathProblem, MathOperation } from '@/types/math';
+import { MathProblem, MathOperation, Difficulty } from '@/types/math';
+import { Monster } from '@/types/game';
 import NumberPad from '@/components/ui/number-pad';
 import VisualBoard from '@/components/ui/visual-board';
 import MotionCard from '@/components/ui/motion-card';
 import BrainGauge from '@/components/ui/brain-gauge';
 import EggHatch from '@/components/game/egg-hatch';
+import CollectionBook from '@/components/game/collection-book';
+import UserSelector from '@/components/game/user-selector';
 import { useGameStore } from '@/store/game-store';
 import { motion, AnimatePresence } from 'framer-motion';
 import confetti from 'canvas-confetti';
-import { getSmartProblem, saveResult } from '@/lib/smart-engine';
-import { pullMonster, Monster, MONSTER_LIST } from '@/lib/monsters';
+import { generateProblem } from '@/lib/generator';
+import { pullRandomMonster, getMonsters } from '@/actions/game-actions';
 
 export default function Home() {
-  // UI 상태
   const [gameMode, setGameMode] = useState<MathOperation | null>(null);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [problem, setProblem] = useState<MathProblem | null>(null);
   const [input, setInput] = useState('');
   const [message, setMessage] = useState('');
   
-  // 가챠/도감 UI 상태
   const [showHatch, setShowHatch] = useState<Monster | null>(null);
   const [showCollection, setShowCollection] = useState(false);
+  const [allMonsters, setAllMonsters] = useState<Monster[]>([]);
 
-  // 전역 상태
   const { 
+    currentUser, login, logout,
     addScore, incrementCombo, resetCombo, resetGame, feverMode, combo,
-    coins, addCoins, spendCoins, unlockMonster, inventory 
+    addCoins, spendCoins, unlockMonster 
   } = useGameStore();
 
   useEffect(() => {
-    if (gameMode) {
-      loadNewProblem();
-      resetGame();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameMode]);
+    getMonsters().then(setAllMonsters);
+  }, []);
 
-  const loadNewProblem = () => {
-    if (!gameMode) return;
-    const newProblem = getSmartProblem(gameMode);
+  if (!currentUser) {
+    return <UserSelector onSelect={login} />;
+  }
+
+  const startGame = (mode: MathOperation, level: Difficulty) => {
+    setGameMode(mode);
+    setDifficulty(level);
+    loadNewProblem(mode, level);
+    resetGame();
+  };
+
+  const loadNewProblem = (mode: MathOperation, level: Difficulty) => {
+    const newProblem = generateProblem(mode, level);
     setProblem(newProblem);
     setInput('');
     setMessage(combo > 0 ? 'Keep going! 🚀' : 'Ready?');
@@ -59,24 +69,23 @@ export default function Home() {
     const userAnswer = parseInt(input);
     const isCorrect = userAnswer === problem.answer;
 
-    saveResult(problem, isCorrect);
-
     if (isCorrect) {
-      const bonus = feverMode ? 20 : 10;
-      addScore(bonus);
-      addCoins(feverMode ? 2 : 1);
-      incrementCombo();
-      setMessage('Excellent! ✨');
+      const bonusScore = problem.rewardPoints * (feverMode ? 2 : 1);
+      const bonusCoins = problem.rewardCoins * (feverMode ? 2 : 1);
       
-      const particleCount = feverMode ? 150 : 50;
+      addScore(bonusScore);
+      addCoins(bonusCoins);
+      incrementCombo();
+      setMessage(`Excellent! +${bonusCoins}코인 ✨`);
+      
       confetti({
-        particleCount: particleCount,
-        spread: feverMode ? 100 : 50,
+        particleCount: feverMode ? 100 : 30,
+        spread: 60,
         origin: { y: 0.6 },
-        colors: feverMode ? ['#FF0000', '#FFFF00'] : ['#4CAF50', '#2196F3']
+        colors: ['#FFD700', '#FFA500', '#4CAF50']
       });
 
-      setTimeout(() => loadNewProblem(), 500); 
+      setTimeout(() => loadNewProblem(gameMode!, difficulty!), 500); 
     } else {
       resetCombo();
       setMessage('Try again! 😅');
@@ -84,26 +93,31 @@ export default function Home() {
     }
   };
 
-  // 알 까기 시도
-  const handleGacha = () => {
-    if (spendCoins(10)) {
-      const newMonster = pullMonster();
+  const handleGacha = async () => {
+    if (!spendCoins(10)) {
+      alert("코인이 부족해요! 문제를 더 풀어보세요 💰");
+      return;
+    }
+    const newMonster = await pullRandomMonster();
+    if (newMonster) {
       unlockMonster(newMonster.id);
       setShowHatch(newMonster);
-    } else {
-      alert("코인이 부족해요! 문제를 더 풀어보세요 💰");
     }
   };
 
-  // 1️⃣ 메인 메뉴 (로비)
+  // 1️⃣ 로비 화면
   if (!gameMode) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-blue-50 p-4 overflow-hidden relative">
-        <div className="absolute top-0 left-0 w-full h-full opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-400 to-transparent pointer-events-none" />
-        
-        {/* 상단 코인 표시 */}
-        <div className="absolute top-4 right-4 bg-white/80 backdrop-blur px-4 py-2 rounded-full shadow-lg font-bold text-yellow-600 flex items-center gap-2 z-10">
-          <span>🪙 {coins}</span>
+        {/* 상단 정보 */}
+        <div className="absolute top-4 right-4 flex gap-4 z-10">
+          <div className="bg-white/80 backdrop-blur px-4 py-2 rounded-full shadow-lg font-bold text-gray-700 flex items-center gap-2">
+            👤 {currentUser.name}
+          </div>
+          <div className="bg-yellow-400 px-4 py-2 rounded-full shadow-lg font-bold text-white flex items-center gap-2">
+            🪙 {currentUser.coins}
+          </div>
+          <button onClick={logout} className="bg-gray-200 px-3 rounded-full text-xs hover:bg-gray-300 transition">로그아웃</button>
         </div>
 
         <MotionCard delay={0.1}>
@@ -113,63 +127,74 @@ export default function Home() {
           <p className="text-center text-gray-500 mb-8 font-bold">말랑말랑 두뇌 체조 🧠</p>
         </MotionCard>
         
-        {/* 메뉴 버튼들 */}
-        <div className="grid gap-4 w-full max-w-sm mb-8">
-          {[
-            { mode: 'ADD', label: '덧셈 챌린지', color: 'bg-green-400', icon: '➕' },
-            { mode: 'SUB', label: '뺄셈 챌린지', color: 'bg-orange-400', icon: '➖' },
-            { mode: 'MUL', label: '구구단 마스터', color: 'bg-purple-400', icon: '✖️' }
-          ].map((item, index) => (
-            <MotionCard key={item.mode} delay={0.2 + (index * 0.1)}>
-              <button 
-                onClick={() => setGameMode(item.mode as MathOperation)} 
-                className={`${item.color} w-full text-white text-2xl font-bold py-5 rounded-3xl shadow-[0_8px_0_rgb(0,0,0,0.1)] active:shadow-none active:translate-y-2 transition-all flex items-center justify-center gap-4`}
-              >
-                <span className="bg-white/20 p-2 rounded-full">{item.icon}</span>
-                {item.label}
+        {/* 게임 모드 선택 (스크롤 가능) */}
+        <div className="w-full max-w-sm space-y-6 mb-8 max-h-[60vh] overflow-y-auto p-2 scrollbar-hide">
+          
+          {/* 덧셈 */}
+          <div className="bg-white p-5 rounded-3xl shadow-md border-b-4 border-green-100">
+            <h3 className="text-center font-bold text-green-600 mb-3 text-lg">➕ 덧셈 챌린지</h3>
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => startGame('ADD', 'LEVEL_1')} className="bg-green-100 hover:bg-green-200 text-green-700 py-3 rounded-xl font-bold text-sm transition">
+                1단계<br/><span className="text-xs font-normal opacity-70">(한자리)</span>
               </button>
-            </MotionCard>
-          ))}
-        </div>
-
-        {/* 하단: 상점 및 도감 버튼 */}
-        <div className="flex gap-4 w-full max-w-sm">
-          <button 
-            onClick={handleGacha}
-            className="flex-1 bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-yellow-200"
-          >
-            🥚 뽑기 (10코인)
-          </button>
-          <button 
-            onClick={() => setShowCollection(!showCollection)}
-            className="flex-1 bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-blue-200"
-          >
-            📖 내 도감
-          </button>
-        </div>
-
-        {/* 도감 보기 (간단 모달) */}
-        {showCollection && (
-          <div className="absolute inset-0 bg-white/95 z-20 p-6 overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold">내 몬스터 도감 ({inventory.length}/{MONSTER_LIST.length})</h2>
-              <button onClick={() => setShowCollection(false)} className="text-2xl">❌</button>
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              {MONSTER_LIST.map((m) => {
-                const isOwned = inventory.includes(m.id);
-                return (
-                  <div key={m.id} className={`p-4 rounded-xl text-center border-2 ${isOwned ? 'border-blue-100 bg-blue-50' : 'border-gray-100 bg-gray-50 opacity-50'}`}>
-                    <div className="text-4xl mb-2">{isOwned ? m.emoji : '❓'}</div>
-                    <div className="text-xs font-bold text-gray-500">{m.name}</div>
-                  </div>
-                )
-              })}
+              <button onClick={() => startGame('ADD', 'LEVEL_2')} className="bg-green-200 hover:bg-green-300 text-green-800 py-3 rounded-xl font-bold text-sm transition">
+                2단계<br/><span className="text-xs font-normal opacity-70">(두자리+1)</span>
+              </button>
+              <button onClick={() => startGame('ADD', 'LEVEL_3')} className="bg-green-500 hover:bg-green-600 text-white py-3 rounded-xl font-bold text-sm transition shadow-lg">
+                3단계<br/><span className="text-xs font-normal opacity-90">(두자리)</span>
+              </button>
             </div>
           </div>
-        )}
 
-        {/* 알 까기 연출 모달 */}
+          {/* 뺄셈 */}
+          <div className="bg-white p-5 rounded-3xl shadow-md border-b-4 border-orange-100">
+            <h3 className="text-center font-bold text-orange-600 mb-3 text-lg">➖ 뺄셈 챌린지</h3>
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => startGame('SUB', 'LEVEL_1')} className="bg-orange-100 hover:bg-orange-200 text-orange-700 py-3 rounded-xl font-bold text-sm transition">
+                1단계<br/><span className="text-xs font-normal opacity-70">(한자리)</span>
+              </button>
+              <button onClick={() => startGame('SUB', 'LEVEL_2')} className="bg-orange-200 hover:bg-orange-300 text-orange-800 py-3 rounded-xl font-bold text-sm transition">
+                2단계<br/><span className="text-xs font-normal opacity-70">(두자리-1)</span>
+              </button>
+              <button onClick={() => startGame('SUB', 'LEVEL_3')} className="bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-xl font-bold text-sm transition shadow-lg">
+                3단계<br/><span className="text-xs font-normal opacity-90">(두자리)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 구구단 (새로 추가됨 ✨) */}
+          <div className="bg-white p-5 rounded-3xl shadow-md border-b-4 border-purple-100">
+            <h3 className="text-center font-bold text-purple-600 mb-3 text-lg">✖️ 구구단 마스터</h3>
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => startGame('MUL', 'LEVEL_1')} className="bg-purple-100 hover:bg-purple-200 text-purple-700 py-3 rounded-xl font-bold text-sm transition">
+                1단계<br/><span className="text-xs font-normal opacity-70">(2~5단)</span>
+              </button>
+              <button onClick={() => startGame('MUL', 'LEVEL_2')} className="bg-purple-200 hover:bg-purple-300 text-purple-800 py-3 rounded-xl font-bold text-sm transition">
+                2단계<br/><span className="text-xs font-normal opacity-70">(6~9단)</span>
+              </button>
+              <button onClick={() => startGame('MUL', 'LEVEL_3')} className="bg-purple-500 hover:bg-purple-600 text-white py-3 rounded-xl font-bold text-sm transition shadow-lg">
+                3단계<br/><span className="text-xs font-normal opacity-90">(전체)</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+        {/* 하단 메뉴 */}
+        <div className="flex gap-4 w-full max-w-sm">
+          <button onClick={handleGacha} className="flex-1 bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-yellow-200 flex flex-col items-center justify-center">
+            <span className="text-xl mb-1">🥚</span>
+            <span className="text-xs">뽑기 (10코인)</span>
+          </button>
+          <button onClick={() => setShowCollection(true)} className="flex-1 bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-blue-200 flex flex-col items-center justify-center">
+            <span className="text-xl mb-1">📖</span>
+            <span className="text-xs">내 도감</span>
+          </button>
+        </div>
+
+        {showCollection && (
+          <CollectionBook monsters={allMonsters} inventory={currentUser.inventory} onClose={() => setShowCollection(false)} />
+        )}
         {showHatch && (
           <EggHatch monster={showHatch} onClose={() => setShowHatch(null)} />
         )}
@@ -177,24 +202,20 @@ export default function Home() {
     );
   }
 
-  // 2️⃣ 게임 화면 (In-Game)
+  // 2️⃣ 게임 화면
   return (
     <main className={`flex min-h-screen flex-col items-center justify-center p-4 transition-colors duration-500 ${feverMode ? 'bg-red-50' : 'bg-yellow-50'}`}>
-      
-      {/* 상단바: 코인 표시 */}
       <div className="absolute top-4 right-4 font-bold text-yellow-600 bg-white/50 px-3 py-1 rounded-full">
-        🪙 {coins}
+        🪙 {currentUser.coins}
       </div>
-
       <BrainGauge />
-
+      
       <AnimatePresence mode='wait'>
         <motion.div
           key={problem?.id}
           initial={{ opacity: 0, x: 50 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: -50 }}
-          transition={{ type: "spring", stiffness: 300, damping: 25 }}
           className="w-full max-w-md"
         >
            <VisualBoard problem={problem} input={input} />
@@ -204,13 +225,8 @@ export default function Home() {
       <div className={`h-8 mt-4 text-xl font-bold transition-transform ${message.includes('Try') ? 'text-red-500 animate-shake' : 'text-blue-500'}`}>
         {message}
       </div>
-
       <NumberPad onInput={handleInput} onDelete={handleDelete} onEnter={handleEnter} />
-
-      <button 
-        onClick={() => setGameMode(null)}
-        className="mt-8 text-gray-400 hover:text-gray-600 font-bold text-sm bg-white/50 px-4 py-2 rounded-full transition-colors"
-      >
+      <button onClick={() => setGameMode(null)} className="mt-8 text-gray-400 hover:text-gray-600 font-bold text-sm bg-white/50 px-4 py-2 rounded-full transition-colors">
         ← 그만하기
       </button>
     </main>

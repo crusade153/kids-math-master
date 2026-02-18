@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Monster } from '@/lib/monsters';
+import { Monster } from '@/types/game';
 import confetti from 'canvas-confetti';
 
 interface EggHatchProps {
