@@ -3,6 +3,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Image from 'next/image'; // ⭐️ 추가
 import { Monster } from '@/types/game';
 import confetti from 'canvas-confetti';
 
@@ -18,7 +19,6 @@ export default function EggHatch({ monster, onClose }: EggHatchProps) {
     setStage('CRACK');
     setTimeout(() => {
       setStage('REVEAL');
-      // 전설 등급이면 대박 폭죽 터뜨리기
       if (monster.rarity === 'LEGENDARY') {
         confetti({ particleCount: 200, spread: 100, colors: ['#FFD700', '#FFFFFF'] });
       }
@@ -29,7 +29,6 @@ export default function EggHatch({ monster, onClose }: EggHatchProps) {
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-3xl p-8 w-full max-w-sm text-center shadow-2xl relative overflow-hidden">
         
-        {/* ✅ 수정 1: 배경 광원 효과에 'pointer-events-none' 추가 (클릭 방해 금지) */}
         {monster.rarity !== 'COMMON' && stage === 'REVEAL' && (
           <motion.div 
             animate={{ rotate: 360 }}
@@ -39,7 +38,6 @@ export default function EggHatch({ monster, onClose }: EggHatchProps) {
         )}
 
         <AnimatePresence mode='wait'>
-          {/* 1단계: 알 (클릭해서 깨기) */}
           {stage !== 'REVEAL' && (
             <motion.div
               key="egg"
@@ -47,7 +45,7 @@ export default function EggHatch({ monster, onClose }: EggHatchProps) {
               animate={{ scale: 1 }}
               exit={{ scale: 1.5, opacity: 0 }}
               onClick={handleCrack}
-              className="cursor-pointer relative z-10" // ✅ 내용물을 위로 올림
+              className="cursor-pointer relative z-10"
             >
               <motion.div
                 animate={stage === 'CRACK' ? { x: [-5, 5, -5, 5, 0], rotate: [0, -10, 10, -10, 0] } : {}}
@@ -60,19 +58,25 @@ export default function EggHatch({ monster, onClose }: EggHatchProps) {
             </motion.div>
           )}
 
-          {/* 2단계: 몬스터 등장 */}
           {stage === 'REVEAL' && (
             <motion.div
               key="monster"
               initial={{ scale: 0, rotate: 180 }}
               animate={{ scale: 1, rotate: 0 }}
               transition={{ type: "spring", bounce: 0.6 }}
-              className="relative z-10" // ✅ 수정 2: 버튼이 배경보다 위에 오도록 z-index 추가
+              className="relative z-10 flex flex-col items-center"
             >
-              <div className="text-2xl font-bold mb-2 text-gray-400">{monster.rarity === 'LEGENDARY' ? '👑 전설 발견!!' : monster.rarity === 'RARE' ? '✨ 희귀 발견!' : '🌱 새로운 친구!'}</div>
-              <div className="text-9xl mb-4 filter drop-shadow-2xl">{monster.emoji}</div>
+              <div className="text-2xl font-bold mb-4 text-gray-400">
+                {monster.rarity === 'LEGENDARY' ? '👑 전설 발견!!' : monster.rarity === 'RARE' ? '✨ 희귀 발견!' : '🌱 새로운 친구!'}
+              </div>
+              
+              {/* ⭐️ 이미지 영역 */}
+              <div className="relative w-40 h-40 mb-4 drop-shadow-2xl">
+                 <Image src={monster.image} alt={monster.name} fill className="object-contain" />
+              </div>
+
               <h2 className="text-3xl font-black text-gray-800 mb-2">{monster.name}</h2>
-              <p className="text-gray-500 mb-8">{monster.description}</p>
+              <p className="text-gray-500 mb-8 line-clamp-2">{monster.description}</p>
               
               <button 
                 onClick={onClose}
