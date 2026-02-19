@@ -11,6 +11,7 @@ import BrainGauge from '@/components/ui/brain-gauge';
 import EggHatch from '@/components/game/egg-hatch';
 import CollectionBook from '@/components/game/collection-book';
 import UserSelector from '@/components/game/user-selector';
+import BattleArena from '@/components/game/battle-arena'; // ⚔️ 추가됨
 import { useGameStore } from '@/store/game-store';
 import { motion, AnimatePresence } from 'framer-motion';
 import confetti from 'canvas-confetti';
@@ -26,6 +27,7 @@ export default function Home() {
   
   const [showHatch, setShowHatch] = useState<Monster | null>(null);
   const [showCollection, setShowCollection] = useState(false);
+  const [showBattle, setShowBattle] = useState(false); // ⚔️ 추가됨
   const [allMonsters, setAllMonsters] = useState<Monster[]>([]);
 
   const { 
@@ -162,7 +164,7 @@ export default function Home() {
             </div>
           </div>
 
-          {/* 구구단 (새로 추가됨 ✨) */}
+          {/* 구구단 */}
           <div className="bg-white p-5 rounded-3xl shadow-md border-b-4 border-purple-100">
             <h3 className="text-center font-bold text-purple-600 mb-3 text-lg">✖️ 구구단 마스터</h3>
             <div className="grid grid-cols-3 gap-2">
@@ -180,15 +182,21 @@ export default function Home() {
 
         </div>
 
-        {/* 하단 메뉴 */}
-        <div className="flex gap-4 w-full max-w-sm">
-          <button onClick={handleGacha} className="flex-1 bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-yellow-200 flex flex-col items-center justify-center">
+        {/* ⭐️ 하단 메뉴 (3개로 확장됨) */}
+        <div className="grid grid-cols-3 gap-3 w-full max-w-sm">
+          <button onClick={handleGacha} className="bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-yellow-200 flex flex-col items-center justify-center transition-all hover:bg-yellow-50">
             <span className="text-xl mb-1">🥚</span>
-            <span className="text-xs">뽑기 (10코인)</span>
+            <span className="text-[11px] whitespace-nowrap">뽑기 (10)</span>
           </button>
-          <button onClick={() => setShowCollection(true)} className="flex-1 bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-blue-200 flex flex-col items-center justify-center">
+          
+          <button onClick={() => setShowCollection(true)} className="bg-white text-gray-700 font-bold py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-blue-200 flex flex-col items-center justify-center transition-all hover:bg-blue-50">
             <span className="text-xl mb-1">📖</span>
-            <span className="text-xs">내 도감</span>
+            <span className="text-[11px] whitespace-nowrap">내 도감</span>
+          </button>
+
+          <button onClick={() => setShowBattle(true)} className="bg-gradient-to-br from-red-500 to-orange-400 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 border-2 border-red-300 flex flex-col items-center justify-center transition-all hover:scale-105">
+            <span className="text-xl mb-1">⚔️</span>
+            <span className="text-[11px] whitespace-nowrap drop-shadow-sm">배틀 10vs10</span>
           </button>
         </div>
 
@@ -197,6 +205,9 @@ export default function Home() {
         )}
         {showHatch && (
           <EggHatch monster={showHatch} onClose={() => setShowHatch(null)} />
+        )}
+        {showBattle && (
+          <BattleArena onClose={() => setShowBattle(false)} />
         )}
       </main>
     );

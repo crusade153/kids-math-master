@@ -24,7 +24,10 @@ export async function getMonsters(): Promise<Monster[]> {
       skills: row.get('주요 스킬'),
       description: row.get('상세 설명'),
       history: row.get('히스토리/특이사항'),
-      image: row.get('이미지 URL') || '', // ⭐️ 이미지 매핑
+      image: row.get('이미지 URL') || '',
+      // ⭐️ 새로 추가된 스탯 매핑 (데이터가 없을 경우 방어 코드: 체력 100, 공격력 10 기본값)
+      hp: parseInt(row.get('HP') || row.get('hp') || '100', 10),
+      attack: parseInt(row.get('공격력') || '10', 10),
     }));
   } catch (error) {
     console.error('구글 시트 로딩 실패:', error);

@@ -10,7 +10,9 @@ export interface Monster {
   skills: string;
   description: string;
   history: string;
-  image: string; // ⭐️ 추가됨
+  image: string;
+  hp: number;      // ⚔️ 새로 추가됨
+  attack: number;  // ⚔️ 새로 추가됨
 }
 
 export interface UserProfile {
