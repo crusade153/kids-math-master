@@ -4,18 +4,31 @@
 import { Monster } from '@/types/game';
 import { getMonsters } from './game-actions';
 
-// 특정 인벤토리에서 랜덤으로 10장 덱 구성 (내 덱, 상대 덱 공통 사용)
 export async function generateDeck(inventoryIds: string[], isOpponent: boolean = false): Promise<Monster[]> {
   const allMonsters = await getMonsters();
-  const userMonsters = allMonsters.filter(m => inventoryIds.includes(m.id));
   
-  // 만약 소유한 카드가 없다면 임시로 전체 몬스터에서 제공 (버그 방지 및 기본 카드 제공)
+  // ⭐️ 획득한 카드(인벤토리)의 레벨(_1, _2)을 파싱하여 스탯 상승폭을 덮어씌웁니다.
+  const userMonsters = inventoryIds.map(invId => {
+    const [baseId, lvl] = invId.split('_');
+    const level = parseInt(lvl || '0', 10);
+    const m = allMonsters.find(x => x.id === baseId);
+    
+    if (!m) return null;
+    
+    const buff = 1 + (0.2 * level); // 레벨당 스탯 20% 증가
+    return {
+      ...m,
+      hp: Math.round(m.hp * buff),
+      attack: Math.round(m.attack * buff),
+      name: level > 0 ? `${m.name} +${level}` : m.name
+    };
+  }).filter(Boolean) as Monster[];
+  
   const pool = userMonsters.length > 0 ? userMonsters : allMonsters;
   
   const deck: Monster[] = [];
   for(let i = 0; i < 10; i++) {
     const randomCard = pool[Math.floor(Math.random() * pool.length)];
-    // 리액트 Key 에러 방지를 위해 고유 ID 조합
     const prefix = isOpponent ? 'opponent' : 'player';
     deck.push({ ...randomCard, id: `${prefix}-${randomCard.id}-${i}` }); 
   }

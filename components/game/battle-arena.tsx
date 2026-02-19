@@ -15,7 +15,7 @@ interface BattleArenaProps {
   onClose: () => void;
 }
 
-type DeckMonster = Monster & { instanceId: string };
+type DeckMonster = Monster & { instanceId: string; level: number }; // ⭐️ level 속성 추가
 
 const getTypeMultiplier = (attackerType: string, defenderType: string) => {
   if (!attackerType || !defenderType) return 1.0;
@@ -36,7 +36,6 @@ const getTypeMultiplier = (attackerType: string, defenderType: string) => {
 const calculateSynergy = (deck: DeckMonster[]) => {
   const counts: Record<string, number> = {};
   deck.forEach(m => {
-    // 🚨 에러 방지: m.type이 비어있을 경우 '노말'로 처리
     const type = m.type ? m.type.split('/')[0].trim() : '노말';
     counts[type] = (counts[type] || 0) + 1;
   });
@@ -91,7 +90,7 @@ const playSynthSound = (type: 'swing' | 'hit' | 'critical' | 'win' | 'lose' | 'c
 const BattleCard = ({ 
   monster, isOpponent, turnState, isDefeated, onDragAttack, buffHp = 1, buffAtk = 1 
 }: { 
-  monster: Monster, isOpponent?: boolean, turnState: string, isDefeated: boolean, onDragAttack?: () => void, buffHp?: number, buffAtk?: number 
+  monster: Monster & { level?: number }, isOpponent?: boolean, turnState: string, isDefeated: boolean, onDragAttack?: () => void, buffHp?: number, buffAtk?: number 
 }) => {
   let animateProps: any = { y: 0, opacity: 1, rotateY: 0, scale: 1, x: 0, filter: 'brightness(1) grayscale(0%)' };
   
@@ -132,18 +131,24 @@ const BattleCard = ({
       initial={{ y: isOpponent ? -100 : 100, opacity: 0, rotateY: 180 }}
       animate={animateProps}
       exit={{ opacity: 0, scale: 0.5 }}
-      className={`bg-white rounded-3xl p-4 shadow-2xl w-40 md:w-48 flex flex-col items-center border-4 relative cursor-grab ${
+      className={`bg-white rounded-[2rem] p-4 shadow-2xl w-40 md:w-48 flex flex-col items-center border-4 relative cursor-grab ${
         isOpponent ? 'border-red-500' : 'border-blue-500'
       }`}
     >
-      <div className={`absolute -top-3 px-3 py-1 rounded-full text-xs font-black text-white shadow-md ${isOpponent ? 'bg-red-500' : 'bg-blue-500'}`}>
+      <div className={`absolute -top-3 px-4 py-1 rounded-full text-xs font-black text-white shadow-md ${isOpponent ? 'bg-red-500' : 'bg-blue-500'}`}>
         {isOpponent ? '상대 카드' : '내 카드'}
       </div>
 
       <div className="absolute top-2 right-2 bg-gray-100 text-[10px] font-black px-2 py-0.5 rounded shadow">
-        {/* 🚨 에러 방지 */}
         {monster.type ? monster.type.split('/')[0] : '❔'}
       </div>
+
+      {/* ⭐️ 배틀 카드에서도 레벨 뱃지 표시 */}
+      {monster.level && monster.level > 0 ? (
+        <div className="absolute top-2 left-2 bg-yellow-400 text-yellow-900 text-[10px] font-black px-2 py-0.5 rounded-full shadow">
+          +{monster.level}
+        </div>
+      ) : null}
 
       <div className="relative w-24 h-24 md:w-32 md:h-32 mb-2 mt-4 pointer-events-none">
         {monster.image ? (
@@ -212,21 +217,34 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
     setOpponent(selectedUser);
     
     if (currentUser) {
-      const myCards = currentUser.inventory.map((id, index) => {
-        const m = allMonsters.find(x => x.id === id);
-        return m ? { ...m, instanceId: `my-${id}-${index}` } : null;
+      // ⭐️ 내 인벤토리에서 ID(_레벨)를 쪼개서 강화 스탯을 적용합니다.
+      const myCards = currentUser.inventory.map((invId, index) => {
+        const [baseId, lvlStr] = invId.split('_');
+        const level = parseInt(lvlStr || '0', 10);
+        const m = allMonsters.find(x => x.id === baseId);
+        
+        if (!m) return null;
+        
+        const buff = 1 + (0.2 * level);
+        return {
+          ...m,
+          hp: Math.round(m.hp * buff),
+          attack: Math.round(m.attack * buff),
+          name: level > 0 ? `${m.name} +${level}` : m.name,
+          instanceId: `my-${invId}-${index}`,
+          level: level
+        };
       }).filter(Boolean) as DeckMonster[];
       
-      // 🚨 에러 방지: allMonsters가 비어있을 경우 대비 더미 데이터 삽입
       while(myCards.length < 10) {
         const fallback = allMonsters.filter(m => m.rarity === 'COMMON')[0] || allMonsters[0];
         if (fallback) {
-          myCards.push({ ...fallback, instanceId: `fallback-${Math.random()}` });
+          myCards.push({ ...fallback, instanceId: `fallback-${Math.random()}`, level: 0 });
         } else {
           myCards.push({
             id: 'dummy', name: '알 수 없음', generation: '1세대', rarity: 'COMMON',
             type: '노말', skills: '', description: '', history: '', image: '',
-            hp: 50, attack: 10, instanceId: `dummy-${Math.random()}`
+            hp: 50, attack: 10, instanceId: `dummy-${Math.random()}`, level: 0
           });
         }
       }
@@ -255,7 +273,8 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
   const handleDeckSubmit = async () => {
     setPlayerDeck(selectedCards);
     const oDeckRaw = await generateDeck(opponent!.inventory, true);
-    setOpponentDeck(oDeckRaw.map((m, i) => ({ ...m, instanceId: `opp-${i}` })));
+    // 상대방 덱은 서버 액션에서 이미 +N 스탯이 적용되어 넘어옵니다
+    setOpponentDeck(oDeckRaw.map((m, i) => ({ ...m, instanceId: `opp-${i}`, level: 0 })));
     setStage('READY');
   };
 
@@ -271,7 +290,6 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
   const handleClash = () => {
     if (turnState !== 'IDLE') return;
     setTurnState('CLASHING');
-    
     playSynthSound('swing');
     
     setTimeout(() => {
@@ -410,7 +428,8 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
                 return (
                   <div key={`slot-${i}`} onClick={() => card && toggleCardSelection(card)} className={`min-w-[80px] h-28 md:min-w-[100px] md:h-36 rounded-xl border-2 flex items-center justify-center cursor-pointer transition-all ${card ? 'bg-blue-100 border-blue-400 hover:bg-red-100' : 'bg-gray-800/50 border-gray-600 border-dashed'}`}>
                     {card ? (
-                      <div className="flex flex-col items-center p-1">
+                      <div className="flex flex-col items-center p-1 relative w-full h-full justify-center">
+                        {card.level > 0 && <span className="absolute top-1 left-1 text-[8px] bg-yellow-400 text-yellow-900 font-bold px-1 rounded z-10">+{card.level}</span>}
                         <div className="relative w-12 h-12 md:w-16 md:h-16"><Image src={card.image} alt={card.name} fill className="object-contain drop-shadow-md" /></div>
                         <span className="text-[10px] md:text-xs font-black text-gray-800 mt-1 truncate w-16 text-center">{card.name}</span>
                       </div>
@@ -435,10 +454,10 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
                     onClick={() => toggleCardSelection(card)}
                     className={`bg-white p-2 rounded-xl border-2 cursor-pointer relative transition-all ${isSelected ? 'border-red-500 opacity-50 grayscale' : 'border-gray-200 hover:border-blue-400 shadow-md'}`}
                   >
+                    {card.level > 0 && <span className="absolute top-1 left-1 bg-yellow-400 text-yellow-900 text-[10px] font-black px-1.5 rounded z-20 shadow">+{card.level}</span>}
                     {isSelected && <div className="absolute inset-0 flex items-center justify-center z-10"><span className="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded-full">선택됨</span></div>}
                     <div className="relative w-full aspect-square"><Image src={card.image} alt={card.name} fill className="object-contain" /></div>
                     <div className="text-center mt-1">
-                      {/* 🚨 에러 방지 */}
                       <span className="text-[9px] bg-gray-100 px-1 rounded font-bold text-gray-500">{card.type ? card.type.split('/')[0] : '❔'}</span>
                     </div>
                   </motion.div>
