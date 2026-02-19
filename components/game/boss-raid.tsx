@@ -1,7 +1,7 @@
 // components/game/boss-raid.tsx
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react'; // ⭐️ useRef 추가됨
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { Monster } from '@/types/game';
@@ -79,7 +79,7 @@ export default function BossRaid({ onClose }: BossRaidProps) {
   const [bossHp, setBossHp] = useState(1000000);
   const [bossMaxHp, setBossMaxHp] = useState(1000000);
   const [bossShake, setBossShake] = useState(false);
-  const [isBossKilled, setIsBossKilled] = useState(false); // ⭐️ 보스 처치 여부
+  const [isBossKilled, setIsBossKilled] = useState(false); 
   
   // 레이드 진행 상태
   const [currentTurn, setCurrentTurn] = useState(0);
@@ -88,7 +88,26 @@ export default function BossRaid({ onClose }: BossRaidProps) {
   
   const pSynergy = calculateSynergy(selectedCards);
 
-  // 1. 초기 데이터 로드
+  // ⭐️ 1. 오디오 객체를 담을 Ref 생성
+  const bgmRef = useRef<HTMLAudioElement | null>(null);
+
+  // ⭐️ 2. 오디오 초기화 및 컴포넌트 언마운트 시 정리 (클린업)
+  useEffect(() => {
+    // 실제 만든 음악 파일 이름으로 수정해주세요!
+    bgmRef.current = new Audio('/sounds/boss-bgm.mp3'); 
+    bgmRef.current.loop = true; // 무한 반복
+    bgmRef.current.volume = 0.5; // 볼륨 50%
+
+    return () => {
+      // 모달이 닫히거나 컴포넌트가 사라지면 음악 정지
+      if (bgmRef.current) {
+        bgmRef.current.pause();
+        bgmRef.current.currentTime = 0;
+      }
+    };
+  }, []);
+
+  // 초기 데이터 로드
   useEffect(() => {
     getMonsters().then(data => {
       setAllMonsters(data);
@@ -127,7 +146,7 @@ export default function BossRaid({ onClose }: BossRaidProps) {
     return () => clearInterval(interval);
   }, [currentUser]);
 
-  // 2. 덱 편집 로직
+  // 덱 편집 로직
   const toggleCardSelection = (card: DeckMonster) => {
     const isSelected = selectedCards.find(c => c.instanceId === card.instanceId);
     if (isSelected) {
@@ -149,9 +168,15 @@ export default function BossRaid({ onClose }: BossRaidProps) {
     setTotalDamage(0);
     setIsBossKilled(false);
     playSynthSound('boss_roar');
+
+    // ⭐️ 3. 레이드 입장 시 BGM 재생
+    if (bgmRef.current) {
+      // 크롬 자동재생 정책 방어를 위해 catch 처리
+      bgmRef.current.play().catch((e) => console.log('BGM 재생 차단됨:', e)); 
+    }
   };
 
-  // 3. 공격 로직
+  // 공격 로직
   const handleAttack = async () => {
     if (currentTurn >= 10) return;
     
@@ -177,25 +202,27 @@ export default function BossRaid({ onClose }: BossRaidProps) {
 
     setTotalDamage(prev => prev + damage);
     
-    // 낙관적 UI: 즉시 체력 깎기
     setBossHp(prev => Math.max(0, prev - damage));
     
-    // 서버에 데미지 전달
     const newStatus = await attackBoss(damage);
     setBossHp(newStatus.hp);
 
-    // ⭐️ 보스 처치 시 로직
+    // 보스 처치 시 로직
     if (newStatus.hp <= 0) {
-      setIsBossKilled(true); // 처치 상태 활성화
+      setIsBossKilled(true);
       playSynthSound('win');
+      
+      // ⭐️ 4. 보스가 죽으면 BGM 정지
+      if (bgmRef.current) {
+        bgmRef.current.pause();
+      }
+
       confetti({ particleCount: 500, spread: 200, origin: { y: 0.3 }, zIndex: 100 });
       
-      // 킬러 본인은 클라이언트에서 310코인을 올리고, 다른 유저들에겐 DB를 통해 300코인 지급
       if (currentUser) {
         distributeBossKillReward(currentUser.id);
       }
       
-      // 즉시 보스 부활 대기
       await resetBoss();
       setStage('RESULT');
       return;
@@ -203,7 +230,11 @@ export default function BossRaid({ onClose }: BossRaidProps) {
 
     setCurrentTurn(c => c + 1);
     if (currentTurn === 9) {
-      setTimeout(() => setStage('RESULT'), 1000);
+      // ⭐️ 턴 종료(모두 타격 완료) 시에도 BGM 정지
+      setTimeout(() => {
+        if (bgmRef.current) bgmRef.current.pause();
+        setStage('RESULT');
+      }, 1000);
     }
   };
 
@@ -341,7 +372,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
           </motion.div>
         )}
 
-        {/* --- 스테이지 3: ⭐️ 결과 화면 (참여 10코인 / 토벌 300코인 분리) --- */}
         {stage === 'RESULT' && (
           <motion.div key="result" initial={{ scale: 0, y: 50 }} animate={{ scale: 1, y: 0 }} className="text-center bg-gray-900 p-12 rounded-[3rem] shadow-[0_0_100px_rgba(239,68,68,0.5)] relative overflow-hidden border-4 border-red-500 w-full max-w-md">
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-red-900/50 to-transparent pointer-events-none" />
@@ -370,7 +400,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
             </div>
 
             <button onClick={() => {
-              // 막타 유저는 310, 일반 참여자는 10을 로컬에 지급
               addCoins(isBossKilled ? 310 : 10); 
               onClose();
             }} className="w-full bg-gradient-to-r from-red-600 to-orange-500 text-white font-black py-4 rounded-full text-xl hover:scale-105 active:scale-95 transition-all z-10 relative shadow-xl">
