@@ -5,17 +5,20 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { Monster, UserProfile } from '@/types/game';
+import { MathProblem } from '@/types/math';
 import { generateDeck } from '@/actions/battle-actions';
 import { getMonsters } from '@/actions/game-actions';
 import { getUsers } from '@/actions/user-actions';
 import { useGameStore } from '@/store/game-store';
+import { generateProblem } from '@/lib/generator';
+import NumberPad from '@/components/ui/number-pad';
 import confetti from 'canvas-confetti';
 
 interface BattleArenaProps {
   onClose: () => void;
 }
 
-type DeckMonster = Monster & { instanceId: string; level: number }; // ⭐️ level 속성 추가
+type DeckMonster = Monster & { instanceId: string; level: number };
 
 const getTypeMultiplier = (attackerType: string, defenderType: string) => {
   if (!attackerType || !defenderType) return 1.0;
@@ -58,7 +61,7 @@ const calculateSynergy = (deck: DeckMonster[]) => {
   return { buffHp, buffAtk, activeSynergies };
 };
 
-const playSynthSound = (type: 'swing' | 'hit' | 'critical' | 'win' | 'lose' | 'click') => {
+const playSynthSound = (type: 'swing' | 'hit' | 'critical' | 'win' | 'lose' | 'click' | 'magic') => {
   try {
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContext) return;
@@ -68,11 +71,13 @@ const playSynthSound = (type: 'swing' | 'hit' | 'critical' | 'win' | 'lose' | 'c
     
     osc.connect(gainNode);
     gainNode.connect(ctx.destination);
-    
     const now = ctx.currentTime;
 
     if (type === 'swing') {
       osc.type = 'sine'; osc.frequency.setValueAtTime(800, now); osc.frequency.exponentialRampToValueAtTime(100, now + 0.2); gainNode.gain.setValueAtTime(0.3, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2); osc.start(now); osc.stop(now + 0.2);
+    } else if (type === 'magic') {
+      // 기 모으는 소리
+      osc.type = 'triangle'; osc.frequency.setValueAtTime(200, now); osc.frequency.linearRampToValueAtTime(600, now + 1.0); gainNode.gain.setValueAtTime(0, now); gainNode.gain.linearRampToValueAtTime(0.3, now + 0.5); gainNode.gain.linearRampToValueAtTime(0, now + 1.0); osc.start(now); osc.stop(now + 1.0);
     } else if (type === 'hit') {
       osc.type = 'square'; osc.frequency.setValueAtTime(150, now); osc.frequency.exponentialRampToValueAtTime(40, now + 0.1); gainNode.gain.setValueAtTime(0.4, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1); osc.start(now); osc.stop(now + 0.1);
     } else if (type === 'critical') {
@@ -143,7 +148,6 @@ const BattleCard = ({
         {monster.type ? monster.type.split('/')[0] : '❔'}
       </div>
 
-      {/* ⭐️ 배틀 카드에서도 레벨 뱃지 표시 */}
       {monster.level && monster.level > 0 ? (
         <div className="absolute top-2 left-2 bg-yellow-400 text-yellow-900 text-[10px] font-black px-2 py-0.5 rounded-full shadow">
           +{monster.level}
@@ -194,8 +198,12 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
   const [playerDeck, setPlayerDeck] = useState<DeckMonster[]>([]);
   const [opponentDeck, setOpponentDeck] = useState<DeckMonster[]>([]);
   
+  // ⭐️ 기 모으기 (크리티컬 문제) 모달용 상태 추가
+  const [attackProblem, setAttackProblem] = useState<MathProblem | null>(null);
+  const [attackInput, setAttackInput] = useState('');
+
   const [stage, setStage] = useState<'SELECT' | 'DECK_BUILDING' | 'READY' | 'BATTLING' | 'RESULT'>('SELECT');
-  const [turnState, setTurnState] = useState<'IDLE' | 'CLASHING' | 'DONE'>('IDLE');
+  const [turnState, setTurnState] = useState<'IDLE' | 'CHARGING' | 'CLASHING' | 'DONE'>('IDLE');
   
   const [currentTurn, setCurrentTurn] = useState(0);
   const [playerScore, setPlayerScore] = useState(0);
@@ -215,16 +223,12 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
 
   const handleSelectOpponent = (selectedUser: UserProfile) => {
     setOpponent(selectedUser);
-    
     if (currentUser) {
-      // ⭐️ 내 인벤토리에서 ID(_레벨)를 쪼개서 강화 스탯을 적용합니다.
       const myCards = currentUser.inventory.map((invId, index) => {
         const [baseId, lvlStr] = invId.split('_');
         const level = parseInt(lvlStr || '0', 10);
         const m = allMonsters.find(x => x.id === baseId);
-        
         if (!m) return null;
-        
         const buff = 1 + (0.2 * level);
         return {
           ...m,
@@ -248,7 +252,6 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
           });
         }
       }
-      
       setMyInventoryCards(myCards);
       setSelectedCards([]); 
       setStage('DECK_BUILDING');
@@ -273,7 +276,6 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
   const handleDeckSubmit = async () => {
     setPlayerDeck(selectedCards);
     const oDeckRaw = await generateDeck(opponent!.inventory, true);
-    // 상대방 덱은 서버 액션에서 이미 +N 스탯이 적용되어 넘어옵니다
     setOpponentDeck(oDeckRaw.map((m, i) => ({ ...m, instanceId: `opp-${i}`, level: 0 })));
     setStage('READY');
   };
@@ -287,8 +289,21 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
     setTurnState('IDLE');
   };
 
-  const handleClash = () => {
+  // ⭐️ 카드를 위로 튕기면, 바로 부딪히는 대신 문제를 출제하며 기를 모음 (CHARGING 상태)
+  const triggerMathCritical = () => {
     if (turnState !== 'IDLE') return;
+    setTurnState('CHARGING');
+    playSynthSound('magic'); // 기 모으는 소리
+    
+    // 무작위로 쉬운 난이도(1단계) 문제를 출제하여 크리티컬 유도 (시간제한 없음)
+    const types: ('ADD' | 'SUB')[] = ['ADD', 'SUB'];
+    const randomType = types[Math.floor(Math.random() * types.length)];
+    setAttackProblem(generateProblem(randomType, 'LEVEL_1'));
+    setAttackInput('');
+  };
+
+  // ⭐️ 문제를 푼 후, 실제 부딪히기 연산
+  const handleClash = (isCrit: boolean) => {
     setTurnState('CLASHING');
     playSynthSound('swing');
     
@@ -298,23 +313,26 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
       
       const pMultiplier = getTypeMultiplier(pCard?.type || '', oCard?.type || '');
       const oMultiplier = getTypeMultiplier(oCard?.type || '', pCard?.type || '');
-      const isPCrit = Math.random() < 0.15;
-      const isOCrit = Math.random() < 0.15;
+      const isOCrit = Math.random() < 0.15; // 상대는 랜덤 크리티컬
 
       const pBaseHp = (pCard?.hp || 0) * pSynergy.buffHp;
       const pBaseAtk = (pCard?.attack || 0) * pSynergy.buffAtk;
       const oBaseHp = (oCard?.hp || 0) * oSynergy.buffHp;
       const oBaseAtk = (oCard?.attack || 0) * oSynergy.buffAtk;
 
-      const pPower = Math.round((pBaseHp + pBaseAtk) * pMultiplier * (isPCrit ? 1.5 : 1));
+      // 수학 정답 시 2배 크리티컬 적용, 오답 시 데미지 절반으로 하락
+      const pCritMult = isCrit ? 2.0 : 0.5;
+      const pPower = Math.round((pBaseHp + pBaseAtk) * pMultiplier * pCritMult);
       const oPower = Math.round((oBaseHp + oBaseAtk) * oMultiplier * (isOCrit ? 1.5 : 1));
 
       const newFloats = [];
       if (pMultiplier > 1) newFloats.push({ id: 1, text: "상성 우위!", color: "text-green-400" });
-      if (isPCrit) {
-        newFloats.push({ id: 2, text: "크리티컬!!", color: "text-yellow-400", large: true });
+      
+      if (isCrit) {
+        newFloats.push({ id: 2, text: "수학 크리티컬 (2배)!!", color: "text-yellow-400", large: true });
         playSynthSound('critical');
       } else {
+        newFloats.push({ id: 2, text: "공격 빗나감 (0.5배)...", color: "text-gray-400" });
         playSynthSound('hit');
       }
       
@@ -360,6 +378,28 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
       <button onClick={onClose} className="absolute top-6 right-6 text-4xl text-white hover:text-red-400 transition-transform hover:scale-110 z-[60]">
         ✖
       </button>
+
+      {/* ⭐️ 기 모으기 (크리티컬 수학 문제) 오버레이 */}
+      {attackProblem && (
+        <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <h2 className="text-3xl font-black text-yellow-400 mb-6 animate-pulse drop-shadow-lg text-center">
+            마법 충전 중...! ✨<br/><span className="text-xl text-white">시간 제한은 없으니 천천히 풀어보세요!</span>
+          </h2>
+          <div className="text-6xl font-mono font-black text-white mb-8 border-4 border-yellow-400 bg-green-700/80 p-6 rounded-3xl shadow-[0_0_50px_rgba(250,204,21,0.5)]">
+            {attackProblem.operandA} {attackProblem.type === 'ADD' ? '+' : '-'} {attackProblem.operandB} = <span className="text-yellow-300">{attackInput || '?'}</span>
+          </div>
+          <NumberPad
+            onInput={(num) => setAttackInput(p => (p.length < 3 ? p + num : p))}
+            onDelete={() => setAttackInput(p => p.slice(0, -1))}
+            onEnter={() => {
+              if (!attackInput) return;
+              const isCorrect = parseInt(attackInput) === attackProblem.answer;
+              setAttackProblem(null); // 모달 닫기
+              handleClash(isCorrect); // 결과에 따른 부딪히기 연산
+            }}
+          />
+        </div>
+      )}
 
       <AnimatePresence mode="wait">
         {(stage === 'BATTLING' || stage === 'RESULT') && (
@@ -560,7 +600,7 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
                 monster={playerDeck[currentTurn]} 
                 turnState={turnState}
                 isDefeated={turnResult === 'LOSE'}
-                onDragAttack={handleClash}
+                onDragAttack={triggerMathCritical} // ⭐️ 여기를 수정: 바로 공격하지 않고 수학 퀴즈(기 모으기) 트리거
                 buffHp={pSynergy.buffHp}
                 buffAtk={pSynergy.buffAtk}
               />

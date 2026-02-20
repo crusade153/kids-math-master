@@ -10,6 +10,10 @@ interface GameState {
   maxCombo: number;
   feverMode: boolean;
 
+  // ⭐️ 일일 미션 관련 상태 추가
+  dailySolvedCount: number;
+  claimedRewards: number[];
+
   login: (user: UserProfile) => void;
   logout: () => void;
   addScore: (points: number) => void;
@@ -19,7 +23,11 @@ interface GameState {
   addCoins: (amount: number) => void;
   spendCoins: (amount: number) => boolean;
   unlockMonster: (monsterId: string) => void;
-  mergeMonsters: (invId: string) => void; // ⭐️ 합성 로직 추가
+  mergeMonsters: (invId: string) => void;
+
+  // ⭐️ 일일 미션 액션 추가
+  incrementSolvedCount: () => void;
+  claimMissionReward: (step: number, coinReward: number) => void;
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -28,6 +36,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   combo: 0,
   maxCombo: 0,
   feverMode: false,
+
+  // 일일 미션 초기값
+  dailySolvedCount: 0,
+  claimedRewards: [],
 
   login: (user) => set({ currentUser: user, score: user.score || 0 }),
   logout: () => set({ currentUser: null, score: 0 }),
@@ -73,7 +85,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const state = get();
     if (!state.currentUser) return;
     
-    // 🚨 이전의 중복 획득 방지 로직을 제거했습니다! 이제 합성을 위해 무한히 모을 수 있습니다.
     const newInventory = [...state.currentUser.inventory, monsterId];
     set({ currentUser: { ...state.currentUser, inventory: newInventory } });
     syncUserProgress(state.currentUser.id, { inventory: newInventory });
@@ -86,7 +97,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     const inv = [...state.currentUser.inventory];
     let count = 0;
     
-    // 합성할 대상 카드 3장을 인벤토리에서 제거합니다.
     const newInv = inv.filter(id => {
       if (id === invId && count < 3) {
         count++;
@@ -95,7 +105,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       return true;
     });
 
-    // 3장이 정상적으로 제거되었다면 레벨이 1 오른 새 카드를 추가합니다.
     if (count === 3) {
       const [baseId, lvlStr] = invId.split('_');
       const level = parseInt(lvlStr || '0', 10);
@@ -103,6 +112,21 @@ export const useGameStore = create<GameState>((set, get) => ({
       
       set({ currentUser: { ...state.currentUser, inventory: newInv } });
       syncUserProgress(state.currentUser.id, { inventory: newInv });
+    }
+  },
+
+  // ⭐️ 정답을 맞출 때마다 문제 풀이 횟수 1 증가
+  incrementSolvedCount: () => set((state) => ({ 
+    dailySolvedCount: state.dailySolvedCount + 1 
+  })),
+
+  // ⭐️ 미션 보상 수령 로직
+  claimMissionReward: (step, coinReward) => {
+    const state = get();
+    // 목표를 달성했고, 아직 수령하지 않은 보상이라면 지급
+    if (state.dailySolvedCount >= step && !state.claimedRewards.includes(step)) {
+      state.addCoins(coinReward);
+      set({ claimedRewards: [...state.claimedRewards, step] });
     }
   }
 }));
