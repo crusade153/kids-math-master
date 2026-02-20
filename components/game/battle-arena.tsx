@@ -76,7 +76,6 @@ const playSynthSound = (type: 'swing' | 'hit' | 'critical' | 'win' | 'lose' | 'c
     if (type === 'swing') {
       osc.type = 'sine'; osc.frequency.setValueAtTime(800, now); osc.frequency.exponentialRampToValueAtTime(100, now + 0.2); gainNode.gain.setValueAtTime(0.3, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2); osc.start(now); osc.stop(now + 0.2);
     } else if (type === 'magic') {
-      // 기 모으는 소리
       osc.type = 'triangle'; osc.frequency.setValueAtTime(200, now); osc.frequency.linearRampToValueAtTime(600, now + 1.0); gainNode.gain.setValueAtTime(0, now); gainNode.gain.linearRampToValueAtTime(0.3, now + 0.5); gainNode.gain.linearRampToValueAtTime(0, now + 1.0); osc.start(now); osc.stop(now + 1.0);
     } else if (type === 'hit') {
       osc.type = 'square'; osc.frequency.setValueAtTime(150, now); osc.frequency.exponentialRampToValueAtTime(40, now + 0.1); gainNode.gain.setValueAtTime(0.4, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1); osc.start(now); osc.stop(now + 0.1);
@@ -154,11 +153,11 @@ const BattleCard = ({
         </div>
       ) : null}
 
-      <div className="relative w-24 h-24 md:w-32 md:h-32 mb-2 mt-4 pointer-events-none">
+      <div className="relative w-24 h-24 md:w-32 md:h-32 mb-2 mt-4 pointer-events-none flex items-center justify-center">
         {monster.image ? (
           <Image src={monster.image} alt={monster.name} fill className="object-contain drop-shadow-xl" draggable={false} />
         ) : (
-          <div className="text-4xl text-center mt-8">❔</div>
+          <div className="text-4xl text-gray-300">❔</div>
         )}
       </div>
       <h3 className="font-black text-gray-800 text-sm md:text-base truncate w-full text-center">{monster.name || '알 수 없음'}</h3>
@@ -198,7 +197,6 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
   const [playerDeck, setPlayerDeck] = useState<DeckMonster[]>([]);
   const [opponentDeck, setOpponentDeck] = useState<DeckMonster[]>([]);
   
-  // ⭐️ 기 모으기 (크리티컬 문제) 모달용 상태 추가
   const [attackProblem, setAttackProblem] = useState<MathProblem | null>(null);
   const [attackInput, setAttackInput] = useState('');
 
@@ -289,20 +287,16 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
     setTurnState('IDLE');
   };
 
-  // ⭐️ 카드를 위로 튕기면, 바로 부딪히는 대신 문제를 출제하며 기를 모음 (CHARGING 상태)
   const triggerMathCritical = () => {
     if (turnState !== 'IDLE') return;
     setTurnState('CHARGING');
-    playSynthSound('magic'); // 기 모으는 소리
-    
-    // 무작위로 쉬운 난이도(1단계) 문제를 출제하여 크리티컬 유도 (시간제한 없음)
+    playSynthSound('magic'); 
     const types: ('ADD' | 'SUB')[] = ['ADD', 'SUB'];
     const randomType = types[Math.floor(Math.random() * types.length)];
     setAttackProblem(generateProblem(randomType, 'LEVEL_1'));
     setAttackInput('');
   };
 
-  // ⭐️ 문제를 푼 후, 실제 부딪히기 연산
   const handleClash = (isCrit: boolean) => {
     setTurnState('CLASHING');
     playSynthSound('swing');
@@ -313,14 +307,13 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
       
       const pMultiplier = getTypeMultiplier(pCard?.type || '', oCard?.type || '');
       const oMultiplier = getTypeMultiplier(oCard?.type || '', pCard?.type || '');
-      const isOCrit = Math.random() < 0.15; // 상대는 랜덤 크리티컬
+      const isOCrit = Math.random() < 0.15; 
 
       const pBaseHp = (pCard?.hp || 0) * pSynergy.buffHp;
       const pBaseAtk = (pCard?.attack || 0) * pSynergy.buffAtk;
       const oBaseHp = (oCard?.hp || 0) * oSynergy.buffHp;
       const oBaseAtk = (oCard?.attack || 0) * oSynergy.buffAtk;
 
-      // 수학 정답 시 2배 크리티컬 적용, 오답 시 데미지 절반으로 하락
       const pCritMult = isCrit ? 2.0 : 0.5;
       const pPower = Math.round((pBaseHp + pBaseAtk) * pMultiplier * pCritMult);
       const oPower = Math.round((oBaseHp + oBaseAtk) * oMultiplier * (isOCrit ? 1.5 : 1));
@@ -379,7 +372,6 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
         ✖
       </button>
 
-      {/* ⭐️ 기 모으기 (크리티컬 수학 문제) 오버레이 */}
       {attackProblem && (
         <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <h2 className="text-3xl font-black text-yellow-400 mb-6 animate-pulse drop-shadow-lg text-center">
@@ -394,8 +386,8 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
             onEnter={() => {
               if (!attackInput) return;
               const isCorrect = parseInt(attackInput) === attackProblem.answer;
-              setAttackProblem(null); // 모달 닫기
-              handleClash(isCorrect); // 결과에 따른 부딪히기 연산
+              setAttackProblem(null); 
+              handleClash(isCorrect); 
             }}
           />
         </div>
@@ -470,7 +462,14 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
                     {card ? (
                       <div className="flex flex-col items-center p-1 relative w-full h-full justify-center">
                         {card.level > 0 && <span className="absolute top-1 left-1 text-[8px] bg-yellow-400 text-yellow-900 font-bold px-1 rounded z-10">+{card.level}</span>}
-                        <div className="relative w-12 h-12 md:w-16 md:h-16"><Image src={card.image} alt={card.name} fill className="object-contain drop-shadow-md" /></div>
+                        {/* ✅ 수정된 부분: 이미지가 없을 때 빈칸 오류 방지 */}
+                        <div className="relative w-12 h-12 md:w-16 md:h-16 flex items-center justify-center">
+                          {card.image ? (
+                            <Image src={card.image} alt={card.name} fill className="object-contain drop-shadow-md" />
+                          ) : (
+                            <span className="text-2xl text-gray-400 drop-shadow-md">❔</span>
+                          )}
+                        </div>
                         <span className="text-[10px] md:text-xs font-black text-gray-800 mt-1 truncate w-16 text-center">{card.name}</span>
                       </div>
                     ) : (
@@ -496,7 +495,14 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
                   >
                     {card.level > 0 && <span className="absolute top-1 left-1 bg-yellow-400 text-yellow-900 text-[10px] font-black px-1.5 rounded z-20 shadow">+{card.level}</span>}
                     {isSelected && <div className="absolute inset-0 flex items-center justify-center z-10"><span className="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded-full">선택됨</span></div>}
-                    <div className="relative w-full aspect-square"><Image src={card.image} alt={card.name} fill className="object-contain" /></div>
+                    {/* ✅ 수정된 부분: 이미지가 없을 때 빈칸 오류 방지 */}
+                    <div className="relative w-full aspect-square flex items-center justify-center bg-gray-50 rounded-lg">
+                      {card.image ? (
+                        <Image src={card.image} alt={card.name} fill className="object-contain" />
+                      ) : (
+                        <span className="text-3xl text-gray-300">❔</span>
+                      )}
+                    </div>
                     <div className="text-center mt-1">
                       <span className="text-[9px] bg-gray-100 px-1 rounded font-bold text-gray-500">{card.type ? card.type.split('/')[0] : '❔'}</span>
                     </div>
@@ -600,7 +606,7 @@ export default function BattleArena({ onClose }: BattleArenaProps) {
                 monster={playerDeck[currentTurn]} 
                 turnState={turnState}
                 isDefeated={turnResult === 'LOSE'}
-                onDragAttack={triggerMathCritical} // ⭐️ 여기를 수정: 바로 공격하지 않고 수학 퀴즈(기 모으기) 트리거
+                onDragAttack={triggerMathCritical}
                 buffHp={pSynergy.buffHp}
                 buffAtk={pSynergy.buffAtk}
               />
