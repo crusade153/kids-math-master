@@ -79,8 +79,9 @@ export default function BossRaid({ onClose }: BossRaidProps) {
   const [stage, setStage] = useState<'DECK_BUILDING' | 'RAIDING' | 'RESULT'>('DECK_BUILDING');
   
   const [bossMonster, setBossMonster] = useState<Monster | null>(null);
-  const [bossHp, setBossHp] = useState(100000);
-  const [bossMaxHp, setBossMaxHp] = useState(100000);
+  // ⭐️ 초기 UI값을 50만으로 설정
+  const [bossHp, setBossHp] = useState(500000);
+  const [bossMaxHp, setBossMaxHp] = useState(500000);
   const [hitEffect, setHitEffect] = useState(false); 
   const [isBossKilled, setIsBossKilled] = useState(false); 
   
@@ -458,9 +459,11 @@ export default function BossRaid({ onClose }: BossRaidProps) {
               {isBossKilled ? (
                 <>
                   <div className="text-xl font-bold text-gray-300 mb-1">기본 참여 보상: 🪙 10</div>
-                  <div className="text-xl font-bold text-yellow-400 mb-4 animate-pulse">전체 토벌 보상: 🪙 300</div>
+                  {/* ⭐️ 보상 텍스트를 300에서 200으로 변경 */}
+                  <div className="text-xl font-bold text-yellow-400 mb-4 animate-pulse">전체 토벌 보상: 🪙 200</div>
                   <div className="h-px w-full bg-gray-600 mb-4"></div>
-                  <div className="text-4xl font-black text-yellow-300">총 🪙 +310 코인!</div>
+                  {/* ⭐️ 총 코인을 310에서 210으로 변경 */}
+                  <div className="text-4xl font-black text-yellow-300">총 🪙 +210 코인!</div>
                 </>
               ) : (
                 <div className="text-3xl font-black text-yellow-300">기본 참여 🪙 +10 코인</div>
@@ -468,7 +471,8 @@ export default function BossRaid({ onClose }: BossRaidProps) {
             </div>
 
             <button onClick={() => {
-              addCoins(isBossKilled ? 310 : 10); 
+              // ⭐️ 실제 로컬 유저에게 더해지는 코인도 310에서 210으로 변경
+              addCoins(isBossKilled ? 210 : 10); 
               onClose();
             }} className="w-full bg-gradient-to-r from-red-600 to-orange-500 text-white font-black py-4 rounded-full text-xl hover:scale-105 active:scale-95 transition-all z-10 relative shadow-xl">
               보상 받고 돌아가기
