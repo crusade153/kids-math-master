@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
-import { Monster, BombGameState, BombPlayer, BombCard, BombCardType } from '@/types/game';
+import { Monster, BombGameState, BombPlayer, BombCard, BombCardType, RpsRoundResult } from '@/types/game';
 import { useGameStore } from '@/store/game-store';
 import { getUsers } from '@/actions/user-actions';
 import { supabase } from '@/lib/supabase';
@@ -19,58 +19,94 @@ interface BombArenaProps {
   roomId?: string;
 }
 
-// 미취학 아동을 위한 한글 패치
+// 🔊 효과음 생성기 (Web Audio API)
+const playSynth = (type: 'draw' | 'play' | 'warn70' | 'warn80' | 'warn90' | 'bomb' | 'win' | 'lose') => {
+  try {
+    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+
+    switch (type) {
+      case 'play': 
+        osc.type = 'square'; osc.frequency.setValueAtTime(300, now); osc.frequency.exponentialRampToValueAtTime(50, now + 0.1);
+        gain.gain.setValueAtTime(0.5, now); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        osc.start(now); osc.stop(now + 0.1); break;
+      case 'warn70': 
+        osc.type = 'triangle'; osc.frequency.setValueAtTime(400, now);
+        gain.gain.setValueAtTime(0.3, now); gain.gain.linearRampToValueAtTime(0, now + 0.2);
+        osc.start(now); osc.stop(now + 0.2); break;
+      case 'warn80': 
+        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(600, now);
+        gain.gain.setValueAtTime(0.4, now); gain.gain.linearRampToValueAtTime(0, now + 0.15);
+        osc.start(now); osc.stop(now + 0.15); break;
+      case 'warn90': 
+        osc.type = 'square'; osc.frequency.setValueAtTime(800, now); osc.frequency.setValueAtTime(1000, now + 0.1);
+        gain.gain.setValueAtTime(0.5, now); gain.gain.linearRampToValueAtTime(0, now + 0.3);
+        osc.start(now); osc.stop(now + 0.3); break;
+      case 'bomb': 
+        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(100, now); osc.frequency.linearRampToValueAtTime(20, now + 0.8);
+        gain.gain.setValueAtTime(1, now); gain.gain.linearRampToValueAtTime(0, now + 0.8);
+        osc.start(now); osc.stop(now + 0.8); break;
+      case 'win': 
+        osc.type = 'sine'; osc.frequency.setValueAtTime(440, now); osc.frequency.setValueAtTime(554, now+0.1); osc.frequency.setValueAtTime(659, now+0.2);
+        gain.gain.setValueAtTime(0.4, now); gain.gain.linearRampToValueAtTime(0, now + 0.5);
+        osc.start(now); osc.stop(now + 0.5); break;
+    }
+  } catch(e) {}
+};
+
+// 미취학 아동용 한글 라벨
 const getCardLabel = (type: BombCardType) => {
   switch (type) {
-    case 'PLUS': return '더하기';
-    case 'MINUS': return '빼기';
-    case 'PASS': return '차례 넘기기';
+    case 'PLUS': return '더하기 (+)';
+    case 'MINUS': return '빼기 (-)';
+    case 'PASS': return '넘기기 (0)';
     case 'REVERSE': return '순서 반대';
-    case 'RESET': return '50으로!';
-    case 'BLIND': return '숫자 가리기';
+    case 'JOKER': return '조커 (숫자바꾸기)';
+    default: return '';
   }
 };
 
-const getCardValueStr = (card: BombCard) => {
-  if (card.cardType === 'PLUS') return `+${card.value}`;
-  if (card.cardType === 'MINUS') return `${card.value}`;
-  if (card.cardType === 'PASS') return `0`;
-  return '';
-};
-
-// 덱에서 카드를 뽑는 로직
+// ⭐️ 최종 확률 적용된 카드 뽑기
 const drawCard = (monsters: Monster[]): BombCard => {
-  const m = monsters[Math.floor(Math.random() * monsters.length)];
-  const type = m.type ? m.type.split('/')[0].trim() : '노말';
-  const rarity = m.rarity;
+  const rand = Math.floor(Math.random() * 100) + 1;
+  let targetEffect: 'PLUS' | 'MINUS' | 'PASS' | 'REVERSE' | 'JOKER' = 'PLUS';
 
-  let cardType: BombCardType = 'PLUS';
-  let value = Math.floor(Math.random() * 10) + 1;
+  if (rand <= 75) targetEffect = 'PLUS';         // 75% (요청 70% + 빈 확률 5% 보정)
+  else if (rand <= 85) targetEffect = 'MINUS';   // 10%
+  else if (rand <= 92) targetEffect = 'REVERSE'; // 7%
+  else if (rand <= 97) targetEffect = 'PASS';    // 5%
+  else targetEffect = 'JOKER';                   // 3%
 
-  if (rarity === 'LEGENDARY' || rarity === 'MYTHICAL') {
-    const specials: BombCardType[] = ['RESET', 'REVERSE', 'BLIND'];
-    cardType = specials[Math.floor(Math.random() * specials.length)];
-    value = cardType === 'RESET' ? 50 : 0;
-  } else if (['물', '풀', '얼음', '독', '에스퍼'].includes(type)) {
-    cardType = 'MINUS';
-    value = -(Math.floor(Math.random() * 10) + 1);
-  } else if (['바위', '강철', '땅'].includes(type)) {
-    cardType = 'PASS';
-    value = 0;
+  let pool = monsters;
+  if (targetEffect === 'JOKER' || targetEffect === 'REVERSE') {
+    pool = monsters.filter(m => m.rarity === 'LEGENDARY' || m.rarity === 'MYTHICAL');
+  } else if (targetEffect === 'MINUS') {
+    pool = monsters.filter(m => ['물', '풀', '얼음', '독', '에스퍼'].includes(m.type?.split('/')[0].trim()));
+  } else if (targetEffect === 'PASS') {
+    pool = monsters.filter(m => ['바위', '강철', '땅'].includes(m.type?.split('/')[0].trim()));
   } else {
-    cardType = 'PLUS';
-    value = Math.floor(Math.random() * 10) + 1;
+    pool = monsters.filter(m => !['물', '풀', '얼음', '독', '에스퍼', '바위', '강철', '땅'].includes(m.type?.split('/')[0].trim()) && m.rarity !== 'LEGENDARY' && m.rarity !== 'MYTHICAL');
   }
 
-  return {
-    id: Math.random().toString(36).substr(2, 9),
-    monsterId: m.id,
-    name: m.name,
-    image: m.image,
-    cardType,
-    value,
-    element: type
-  };
+  // 예외 방지: DB에 해당 속성이 없을 경우 전체 몬스터에서 충당
+  if (pool.length === 0) pool = monsters;
+
+  const m = pool[Math.floor(Math.random() * pool.length)];
+  let cardType = targetEffect;
+  let value = 0;
+
+  if (cardType === 'PLUS') {
+    value = Math.floor(Math.random() * 10) + 1; // 1~10 랜덤
+  } else if (cardType === 'MINUS') {
+    value = Math.random() < 0.5 ? -9 : -10; // -9 또는 -10 만 등장
+  }
+
+  return { id: Math.random().toString(36).substr(2, 9), monsterId: m.id, name: m.name, image: m.image, cardType, value, element: m.type ? m.type.split('/')[0].trim() : '노말' };
 };
 
 export default function BombArena({ allMonsters, onClose, onlineUsers, initialOpponentId, isHost, roomId }: BombArenaProps) {
@@ -78,16 +114,20 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   const [users, setUsers] = useState<{id:string, name:string}[]>([]);
   
   const [gameState, setGameState] = useState<BombGameState>({
-    step: 'LOBBY', maxPlayers: 4, players: [], turnIndex: 0, direction: 1, gauge: 0, isBlind: false, boss: null, winnerName: null,
-    rpsQueue: [], rankedPlayers: [], rpsMsg: '가위바위보를 선택하세요!', lastActionMsg: ''
+    step: 'LOBBY', maxPlayers: 4, players: [], turnIndex: 0, direction: 1, gauge: 0, boss: null, winnerName: null,
+    rpsQueue: [], rankedPlayers: [], rpsRoundResults: [], rpsMsg: '가위바위보를 선택하세요!', lastActionMsg: ''
   });
   
   const [channel, setChannel] = useState<any>(null);
+  const [shakeIntensity, setShakeIntensity] = useState(0); 
+  
+  const [jokerSelection, setJokerSelection] = useState<{ active: boolean, cardId: string } | null>(null);
+  const [jokerInput, setJokerInput] = useState<number>(75);
+
   const bgmRef = useRef<HTMLAudioElement | null>(null);
   const stateRef = useRef(gameState); 
   stateRef.current = gameState;
 
-  // BGM 연동 (90 이상일 때 재생)
   useEffect(() => {
     bgmRef.current = new Audio('/sounds/tension-bgm.mp3'); 
     bgmRef.current.loop = true;
@@ -101,17 +141,18 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   useEffect(() => {
     if (gameState.step === 'PLAYING') {
       if (gameState.gauge >= 90) {
-        bgmRef.current?.play().catch(() => {}); 
+        if (bgmRef.current?.paused) bgmRef.current.play().catch(()=>{});
+        playSynth('warn90');
       } else {
-        bgmRef.current?.pause();
+        if (!bgmRef.current?.paused) bgmRef.current?.pause();
+        if (gameState.gauge >= 80) playSynth('warn80');
+        else if (gameState.gauge >= 70) playSynth('warn70');
       }
     }
   }, [gameState.gauge, gameState.step]);
 
-  // 유저 정보 가져오기
   useEffect(() => { getUsers().then(setUsers); }, []);
 
-  // 멀티플레이 채널 세팅
   useEffect(() => {
     if (!currentUser) return;
     const roomName = roomId || `bomb_${currentUser.id}_${Math.random().toString(36).substring(7)}`;
@@ -129,9 +170,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       if (status === 'SUBSCRIBED') {
         await chan.track({ name: currentUser.name });
         if (isHost) {
-          const hostPlayer: BombPlayer = {
-            id: currentUser.id, name: currentUser.name, isBot: false, hand: Array.from({length: 5}).map(() => drawCard(allMonsters)), isEliminated: false
-          };
+          const hostPlayer: BombPlayer = { id: currentUser.id, name: currentUser.name, isBot: false, hand: Array.from({length: 5}).map(() => drawCard(allMonsters)), isEliminated: false };
           updateState({ players: [hostPlayer] });
         } else if (initialOpponentId) {
           chan.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'JOIN', data: { id: currentUser.id, name: currentUser.name } } });
@@ -145,9 +184,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   const updateState = (updates: Partial<BombGameState>) => {
     const newState = { ...stateRef.current, ...updates };
     setGameState(newState);
-    if (channel && isHost) {
-      channel.send({ type: 'broadcast', event: 'SYNC_STATE', payload: { state: newState } });
-    }
+    if (channel && isHost) channel.send({ type: 'broadcast', event: 'SYNC_STATE', payload: { state: newState } });
   };
 
   const handlePlayerAction = (type: string, data: any) => {
@@ -160,16 +197,8 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       updateState({ players: updatedPlayers });
       checkAllRPSReady(updatedPlayers);
     } else if (type === 'PLAY_CARD' && state.step === 'PLAYING') {
-      processCardPlay(data.playerId, data.cardId);
+      processCardPlay(data.playerId, data.cardId, data.jokerValue);
     }
-  };
-
-  const invitePlayer = (uId: string) => {
-    supabase.channel('global_lobby').send({
-      type: 'broadcast', event: 'battle_invite',
-      payload: { hostId: currentUser?.id, hostName: currentUser?.name, targetId: uId, gameType: 'BOMB' }
-    });
-    alert('초대장을 보냈습니다!');
   };
 
   const fillWithBotsAndStart = () => {
@@ -179,16 +208,27 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       currentPlayers.push({ id: `bot_${botCount}`, name: `로봇 ${botCount}호`, isBot: true, hand: Array.from({length: 5}).map(() => drawCard(allMonsters)), isEliminated: false });
       botCount++;
     }
-    updateState({ 
-      players: currentPlayers, 
-      step: 'RPS', 
-      rpsQueue: [currentPlayers.map(p => p.id)], 
-      rankedPlayers: [],
-      rpsMsg: '가위바위보를 선택하세요!' 
-    });
+    updateState({ players: currentPlayers, step: 'RPS', rpsQueue: [currentPlayers.map(p => p.id)], rankedPlayers: [], rpsMsg: '가위바위보를 선택하세요!' });
   };
 
-  // ================= 가위바위보 로직 (무한 리트라이 적용) =================
+  // ================= ✌️✊🖐 가위바위보 및 봇 끼임 방지 로직 =================
+  useEffect(() => {
+    if (!isHost || gameState.step !== 'RPS') return;
+    const currentGroup = gameState.rpsQueue[0];
+    if (!currentGroup) return;
+
+    // 만약 현재 가위바위보 그룹이 100% 봇으로만 이루어져 있다면, 1.5초 뒤 자동 처리
+    const allBots = currentGroup.every(id => gameState.players.find(p => p.id === id)?.isBot);
+    
+    if (allBots) {
+      const timer = setTimeout(() => {
+        checkAllRPSReady(gameState.players);
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.step, gameState.rpsQueue, isHost]);
+
   const submitRPS = (choice: 'ROCK' | 'PAPER' | 'SCISSORS') => {
     if (isHost) {
       const updated = stateRef.current.players.map(p => p.id === currentUser?.id ? { ...p, rpsChoice: choice } : p);
@@ -206,7 +246,6 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
 
     let updatedPlayers = [...players];
     
-    // 봇들 자동 내기
     currentGroup.forEach(id => {
       const p = updatedPlayers.find(x => x.id === id);
       if (p && p.isBot && !p.rpsChoice) {
@@ -215,36 +254,44 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       }
     });
 
-    const allReady = currentGroup.every(id => updatedPlayers.find(p => p.id === id)?.rpsChoice);
-    if (!allReady) {
-      updateState({ players: updatedPlayers });
-      return;
+    if (!currentGroup.every(id => updatedPlayers.find(p => p.id === id)?.rpsChoice)) {
+      updateState({ players: updatedPlayers }); return;
     }
 
     const choices = new Set(currentGroup.map(id => updatedPlayers.find(p => p.id === id)!.rpsChoice));
+    const hasR = choices.has('ROCK'); const hasP = choices.has('PAPER'); const hasS = choices.has('SCISSORS');
     
-    if (choices.size === 1 || choices.size === 3) {
-      // 무승부 -> 해당 그룹 다시
-      currentGroup.forEach(id => { updatedPlayers.find(x => x.id === id)!.rpsChoice = undefined; });
-      updateState({ players: updatedPlayers, rpsMsg: '비겼습니다! 최후의 승자가 나올 때까지 다시 냅니다!' });
-    } else {
-      // 승패 결정
-      const hasRock = choices.has('ROCK');
-      const hasPaper = choices.has('PAPER');
-      const hasScissors = choices.has('SCISSORS');
-      let winChoice = '';
-      if (hasRock && hasScissors) winChoice = 'ROCK';
-      else if (hasScissors && hasPaper) winChoice = 'SCISSORS';
-      else if (hasPaper && hasRock) winChoice = 'PAPER';
+    let isDraw = choices.size === 1 || choices.size === 3;
+    let winChoice = '';
+    if (!isDraw) {
+      if (hasR && hasS) winChoice = 'ROCK';
+      if (hasS && hasP) winChoice = 'SCISSORS';
+      if (hasP && hasR) winChoice = 'PAPER';
+    }
 
-      const winners = currentGroup.filter(id => updatedPlayers.find(p => p.id === id)!.rpsChoice === winChoice);
-      const losers = currentGroup.filter(id => updatedPlayers.find(p => p.id === id)!.rpsChoice !== winChoice);
+    const roundResults: RpsRoundResult[] = currentGroup.map(id => {
+      const p = updatedPlayers.find(x => x.id === id)!;
+      let status: 'WIN'|'LOSE'|'DRAW' = 'DRAW';
+      if (!isDraw) status = p.rpsChoice === winChoice ? 'WIN' : 'LOSE';
+      return { id: p.id, name: p.name, isBot: p.isBot, choice: p.rpsChoice!, status };
+    });
 
-      let newQueue = state.rpsQueue.slice(1);
-      if (losers.length > 0) newQueue.unshift(losers);
-      if (winners.length > 0) newQueue.unshift(winners);
+    updateState({ players: updatedPlayers, step: 'RPS_SHOW', rpsRoundResults: roundResults, rpsMsg: isDraw ? '앗, 비겼습니다!' : '승패가 갈렸습니다!' });
 
-      let newRanked = [...state.rankedPlayers];
+    setTimeout(() => {
+      const currentState = stateRef.current;
+      let newQueue = currentState.rpsQueue.slice(1);
+      let newRanked = [...currentState.rankedPlayers];
+
+      if (isDraw) {
+        newQueue.unshift(currentGroup); 
+      } else {
+        const winners = currentGroup.filter(id => updatedPlayers.find(p=>p.id===id)!.rpsChoice === winChoice);
+        const losers = currentGroup.filter(id => updatedPlayers.find(p=>p.id===id)!.rpsChoice !== winChoice);
+        if (losers.length > 0) newQueue.unshift(losers);
+        if (winners.length > 0) newQueue.unshift(winners);
+      }
+
       while (newQueue.length > 0 && newQueue[0].length === 1) {
         newRanked.push(newQueue.shift()![0]);
       }
@@ -254,40 +301,61 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       if (newQueue.length === 0) {
         updatedPlayers.sort((a, b) => newRanked.indexOf(a.id) - newRanked.indexOf(b.id));
         const boss = allMonsters.filter(m => m.rarity === 'MYTHICAL' || m.rarity === 'LEGENDARY')[0] || allMonsters[0];
-        
         updateState({ players: updatedPlayers, rpsQueue: [], rankedPlayers: newRanked, step: 'RPS_RESULT', boss });
-        setTimeout(() => { updateState({ step: 'PLAYING', turnIndex: 0 }); }, 4000);
+        setTimeout(() => updateState({ step: 'PLAYING', turnIndex: 0, lastActionMsg: '폭탄 돌리기 시작!' }), 4000);
       } else {
-        updateState({ players: updatedPlayers, rpsQueue: newQueue, rankedPlayers: newRanked, rpsMsg: '승패가 갈렸습니다! 다음 순위를 결정합니다.' });
+        updateState({ players: updatedPlayers, rpsQueue: newQueue, rankedPlayers: newRanked, step: 'RPS', rpsMsg: isDraw ? '다시 내주세요!' : '남은 사람끼리 다시 냅니다!' });
       }
+    }, 3500);
+  };
+
+  // ================= 💣 폭탄 게임 로직 =================
+  const initiateCardPlay = (card: BombCard) => {
+    if (card.cardType === 'JOKER') {
+      setJokerSelection({ active: true, cardId: card.id });
+    } else {
+      executePlay(card.id);
     }
   };
 
-  // ================= 99 폭탄 게임 로직 =================
-  const playMyCard = (cardId: string) => {
-    if (isHost) processCardPlay(currentUser!.id, cardId);
-    else channel?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'PLAY_CARD', data: { playerId: currentUser!.id, cardId } } });
+  const executePlay = (cardId: string, jokerValue?: number) => {
+    setJokerSelection(null);
+    if (isHost) processCardPlay(currentUser!.id, cardId, jokerValue);
+    else channel?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'PLAY_CARD', data: { playerId: currentUser!.id, cardId, jokerValue } } });
   };
 
-  const processCardPlay = (playerId: string, cardId: string) => {
+  const processCardPlay = (playerId: string, cardId: string, jokerValue?: number) => {
     const state = stateRef.current;
     if (state.players[state.turnIndex].id !== playerId) return;
 
     let newDirection = state.direction;
     let newGauge = state.gauge;
-    let newBlind = false;
 
     const playerIndex = state.turnIndex;
     const player = state.players[playerIndex];
     const playedCard = player.hand.find(c => c.id === cardId);
     if (!playedCard) return;
 
-    const actionMsg = `가랏! ${playedCard.name}! (${getCardLabel(playedCard.cardType)} ${getCardValueStr(playedCard)})`;
+    playSynth('play');
 
-    if (playedCard.cardType === 'RESET') newGauge = 50;
+    let actionStr = '';
+    if (playedCard.cardType === 'PLUS') actionStr = `+${playedCard.value}`;
+    else if (playedCard.cardType === 'MINUS') actionStr = `${playedCard.value}`;
+    else if (playedCard.cardType === 'PASS') actionStr = '패스';
+    else if (playedCard.cardType === 'REVERSE') actionStr = '순서 반대';
+    else if (playedCard.cardType === 'JOKER') actionStr = `조커 ${jokerValue}`;
+
+    let actionMsg = `가랏! ${playedCard.name}! (${actionStr})`;
+
+    if (playedCard.cardType === 'JOKER') newGauge = jokerValue || 75;
     else if (playedCard.cardType === 'REVERSE') newDirection = (state.direction * -1) as 1 | -1;
-    else if (playedCard.cardType === 'BLIND') { newBlind = true; newGauge += playedCard.value; }
-    else newGauge += playedCard.value; 
+    else newGauge += playedCard.value;
+
+    if (newGauge >= 90) setShakeIntensity(20);
+    else if (newGauge >= 80) setShakeIntensity(10);
+    else if (newGauge >= 70) setShakeIntensity(5);
+    else setShakeIntensity(2);
+    setTimeout(() => setShakeIntensity(0), 400);
 
     const newHand = player.hand.filter(c => c.id !== cardId);
     newHand.push(drawCard(allMonsters));
@@ -295,11 +363,12 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     const updatedPlayers = [...state.players];
     let finalActionMsg = actionMsg;
     
-    // 💣 폭발 로직: 99 이상이면 탈락
-    if (newGauge >= 99) {
+    // 99 초과 (100 이상) 시 패배 처리
+    if (newGauge > 99) {
       updatedPlayers[playerIndex] = { ...player, isEliminated: true, hand: newHand };
-      finalActionMsg = `💥 ${player.name} 폭발! (게이지 99 이상)`;
-      newGauge = 50; // 남은 사람들을 위해 게이지 초기화
+      finalActionMsg = `💥 ${player.name} 폭발! (100 도달)`;
+      newGauge = 50; 
+      playSynth('bomb');
     } else {
       updatedPlayers[playerIndex] = { ...player, hand: newHand };
     }
@@ -310,6 +379,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     if (aliveCount <= 1) {
       const winner = updatedPlayers.find(p => !p.isEliminated);
       updateState({ players: updatedPlayers, gauge: newGauge, step: 'RESULT', winnerName: winner?.name || '무승부', lastActionMsg: finalActionMsg });
+      playSynth('win');
       if (bgmRef.current) bgmRef.current.pause();
       return;
     }
@@ -318,10 +388,10 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       nextTurn = (nextTurn + newDirection + updatedPlayers.length) % updatedPlayers.length;
     } while (updatedPlayers[nextTurn].isEliminated);
 
-    updateState({ players: updatedPlayers, gauge: newGauge, direction: newDirection, turnIndex: nextTurn, isBlind: newBlind, lastActionMsg: finalActionMsg });
+    updateState({ players: updatedPlayers, gauge: newGauge, direction: newDirection, turnIndex: nextTurn, lastActionMsg: finalActionMsg });
   };
 
-  // 🤖 봇 AI (생존 우선)
+  // 🤖 봇 AI 로직
   useEffect(() => {
     if (!isHost || gameState.step !== 'PLAYING') return;
 
@@ -329,42 +399,85 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     if (currentP && currentP.isBot && !currentP.isEliminated) {
       const timer = setTimeout(() => {
         const safeCards = currentP.hand.filter(c => {
-          if (c.cardType === 'RESET' || c.cardType === 'REVERSE' || c.cardType === 'PASS') return true;
-          return gameState.gauge + c.value < 99;
+          if (c.cardType === 'JOKER' || c.cardType === 'REVERSE' || c.cardType === 'PASS') return true;
+          return gameState.gauge + c.value <= 99;
         });
 
         if (safeCards.length > 0) {
-          const cardToPlay = safeCards[Math.floor(Math.random() * safeCards.length)];
-          processCardPlay(currentP.id, cardToPlay.id);
+          const card = safeCards[Math.floor(Math.random() * safeCards.length)];
+          const jokerVal = card.cardType === 'JOKER' ? Math.floor(Math.random() * 31) + 60 : undefined; // 60~90
+          processCardPlay(currentP.id, card.id, jokerVal);
         } else {
-          // 살 길이 없으면 제일 작은 수를 내고 터짐
           const sorted = [...currentP.hand].sort((a,b) => a.value - b.value);
           processCardPlay(currentP.id, sorted[0].id);
         }
-      }, 2000); 
+      }, 2500); 
       return () => clearTimeout(timer);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.turnIndex, gameState.step, isHost]);
 
-  // ================= 렌더링 =================
+  const getBgClass = () => {
+    if (gameState.step !== 'PLAYING') return 'bg-gray-900/95';
+    if (gameState.gauge >= 90) return 'bg-red-800/95';
+    if (gameState.gauge >= 80) return 'bg-orange-800/90';
+    if (gameState.gauge >= 70) return 'bg-yellow-900/90';
+    return 'bg-gray-900/95';
+  };
+
   const myPlayerInfo = gameState.players.find(p => p.id === currentUser?.id);
   const isMyTurn = gameState.step === 'PLAYING' && gameState.players[gameState.turnIndex]?.id === currentUser?.id;
   const isRPSActive = gameState.rpsQueue[0]?.includes(currentUser?.id || '');
 
   return (
-    <div className="fixed inset-0 z-[90] flex flex-col items-center justify-center p-4 bg-gray-900/95 backdrop-blur-xl touch-none overflow-hidden text-white font-sans">
+    <motion.div 
+      animate={shakeIntensity > 0 ? { x: [-shakeIntensity, shakeIntensity, -shakeIntensity, shakeIntensity, 0], y: [-shakeIntensity, shakeIntensity, -shakeIntensity, shakeIntensity, 0] } : {}}
+      className={`fixed inset-0 z-[90] flex flex-col items-center justify-center p-4 backdrop-blur-xl touch-none overflow-hidden text-white font-sans transition-colors duration-300 ${getBgClass()}`}
+    >
       
-      {/* 폭발해서 패배한 유저용 모달 (나가기 전용) */}
+      {/* 💥 패배자 관전 전환 모달 */}
       <AnimatePresence>
         {myPlayerInfo?.isEliminated && gameState.step === 'PLAYING' && (
-          <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="absolute inset-0 z-[200] bg-black/90 flex flex-col items-center justify-center p-6 text-center">
+          <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center p-6 text-center">
             <div className="text-9xl mb-6 animate-bounce">💥</div>
-            <h2 className="text-5xl font-black text-red-500 mb-4">펑! 폭발했습니다!</h2>
+            <h2 className="text-5xl font-black text-red-500 mb-4">앗! 폭발해버렸어요!</h2>
             <p className="text-gray-300 text-xl font-bold mb-12">99를 초과하여 게임에서 패배했습니다.</p>
-            <button onClick={onClose} className="px-10 py-5 bg-gray-700 hover:bg-gray-600 text-white rounded-3xl font-black text-2xl shadow-xl active:scale-95 transition-all">
-              게임 나가기 🚪
-            </button>
+            <div className="flex gap-4">
+              <button onClick={() => updateState({})} className="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-xl shadow-xl active:scale-95 transition-all">
+                👀 남은 게임 관전하기
+              </button>
+              <button onClick={onClose} className="px-8 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-2xl font-black text-xl shadow-xl active:scale-95 transition-all">
+                🚪 게임 방 나가기
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 🃏 조커 카드 사용 모달 */}
+      <AnimatePresence>
+        {jokerSelection?.active && (
+          <motion.div initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[150] bg-black/80 flex flex-col items-center justify-center p-6 backdrop-blur-md">
+            <div className="bg-purple-900 border-4 border-purple-400 p-8 rounded-[3rem] text-center max-w-sm w-full shadow-[0_0_50px_rgba(168,85,247,0.6)]">
+              <div className="text-6xl mb-4">🃏</div>
+              <h2 className="text-3xl font-black text-white mb-2">조커 발동!</h2>
+              <p className="text-purple-200 font-bold mb-8">숫자를 60에서 90 사이로<br/>마음대로 조작하세요!</p>
+              
+              <div className="text-7xl font-black text-yellow-300 mb-6 border-b-4 border-purple-500 pb-4">
+                {jokerInput}
+              </div>
+              
+              <input type="range" min="60" max="90" value={jokerInput} onChange={(e) => setJokerInput(parseInt(e.target.value))} className="w-full h-4 bg-purple-700 rounded-lg appearance-none cursor-pointer mb-8" />
+              
+              <div className="flex gap-3">
+                <button onClick={() => executePlay(jokerSelection.cardId, jokerInput)} className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-yellow-900 font-black py-4 rounded-2xl text-xl shadow-lg active:scale-95 transition-all">
+                  확인
+                </button>
+                <button onClick={() => setJokerSelection(null)} className="bg-gray-700 hover:bg-gray-600 text-white font-black py-4 px-6 rounded-2xl shadow-lg active:scale-95 transition-all">
+                  취소
+                </button>
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -373,11 +486,11 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
 
       <AnimatePresence mode="wait">
         
-        {/* 대기방 */}
+        {/* 단계 1: 대기방 */}
         {gameState.step === 'LOBBY' && (
           <motion.div key="lobby" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="w-full max-w-2xl bg-gray-800 p-8 rounded-3xl border-4 border-red-500 shadow-2xl">
             <h2 className="text-4xl font-black mb-2 text-center text-red-400">💣 몬스터 폭탄 돌리기</h2>
-            <p className="text-center text-gray-400 mb-8 font-bold">99 이상이 되면 폭발합니다! 끝까지 살아남으세요.</p>
+            <p className="text-center text-gray-400 mb-8 font-bold">100이 되면 펑! 끝까지 살아남으세요.</p>
             
             {isHost ? (
               <>
@@ -389,21 +502,17 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                   ))}
                 </div>
                 <div className="mb-6 p-4 bg-gray-900 rounded-2xl">
-                  <h3 className="font-bold text-yellow-400 mb-3">접속 중인 유저 초대</h3>
+                  <h3 className="font-bold text-yellow-400 mb-3">접속 중인 친구 초대</h3>
                   <div className="flex gap-2 overflow-x-auto">
                     {onlineUsers.filter(uid => uid !== currentUser?.id).map(uid => {
                       const u = users.find(x => x.id === uid);
-                      return u ? (
-                        <button key={uid} onClick={() => invitePlayer(uid)} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg font-bold shadow whitespace-nowrap">
-                          {u.name} 초대
-                        </button>
-                      ) : null;
+                      return u ? <button key={uid} onClick={() => invitePlayer(uid)} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg font-bold shadow whitespace-nowrap">{u.name} 초대</button> : null;
                     })}
                     {onlineUsers.length <= 1 && <span className="text-gray-500 text-sm">현재 접속 중인 다른 유저가 없습니다.</span>}
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 mb-8">
-                  <h3 className="font-bold text-green-400">참가 대기 명단 ({gameState.players.length}/{gameState.maxPlayers})</h3>
+                  <h3 className="font-bold text-green-400">참가 명단 ({gameState.players.length}/{gameState.maxPlayers})</h3>
                   {gameState.players.map(p => <div key={p.id} className="bg-gray-700 p-3 rounded-lg font-bold">✅ {p.name} {p.id===currentUser?.id && '(나)'}</div>)}
                 </div>
                 <button onClick={fillWithBotsAndStart} className="w-full bg-red-600 hover:bg-red-500 py-4 rounded-2xl font-black text-xl shadow-lg active:scale-95 transition-all">
@@ -411,15 +520,12 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                 </button>
               </>
             ) : (
-               <div className="text-center py-20">
-                 <div className="text-6xl animate-spin mb-4">⏳</div>
-                 <h2 className="text-2xl font-bold text-yellow-300">방장이 게임을 설정 중입니다...</h2>
-               </div>
+               <div className="text-center py-20"><div className="text-6xl animate-spin mb-4">⏳</div><h2 className="text-2xl font-bold text-yellow-300">방장이 게임을 설정 중입니다...</h2></div>
             )}
           </motion.div>
         )}
 
-        {/* 가위바위보 */}
+        {/* 단계 2: 가위바위보 선택 */}
         {gameState.step === 'RPS' && (
           <motion.div key="rps" initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="text-center w-full max-w-xl bg-gray-800 p-10 rounded-3xl border-4 border-yellow-400 shadow-2xl">
             <h2 className="text-5xl font-black mb-6 text-yellow-400">✌️ ✊ 🖐</h2>
@@ -428,14 +534,8 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
             
             {isRPSActive && !myPlayerInfo?.rpsChoice ? (
               <div className="flex justify-center gap-6">
-                {[
-                  { id: 'SCISSORS', emoji: '✌️', color: 'bg-pink-500' },
-                  { id: 'ROCK', emoji: '✊', color: 'bg-blue-500' },
-                  { id: 'PAPER', emoji: '🖐', color: 'bg-green-500' }
-                ].map(opt => (
-                  <button key={opt.id} onClick={() => submitRPS(opt.id as any)} className={`${opt.color} hover:scale-110 active:scale-95 transition-all w-28 h-28 rounded-3xl text-6xl shadow-xl flex items-center justify-center border-4 border-white`}>
-                    {opt.emoji}
-                  </button>
+                {[{ id: 'SCISSORS', emoji: '✌️', color: 'bg-pink-500' }, { id: 'ROCK', emoji: '✊', color: 'bg-blue-500' }, { id: 'PAPER', emoji: '🖐', color: 'bg-green-500' }].map(opt => (
+                  <button key={opt.id} onClick={() => submitRPS(opt.id as any)} className={`${opt.color} hover:scale-110 active:scale-95 transition-all w-28 h-28 rounded-3xl text-6xl shadow-xl flex items-center justify-center border-4 border-white`}>{opt.emoji}</button>
                 ))}
               </div>
             ) : (
@@ -444,33 +544,49 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
           </motion.div>
         )}
 
-        {/* 가위바위보 결과 */}
+        {/* 단계 3: 가위바위보 중간 결과 공개 */}
+        {gameState.step === 'RPS_SHOW' && (
+          <motion.div key="rps_show" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="text-center w-full max-w-3xl bg-gray-800 p-10 rounded-3xl border-4 border-white shadow-2xl">
+            <h2 className="text-4xl font-black mb-8 text-white">{gameState.rpsMsg}</h2>
+            <div className="flex justify-center gap-6 flex-wrap">
+              {gameState.rpsRoundResults.map(r => (
+                <div key={r.id} className={`flex flex-col items-center p-4 rounded-2xl border-4 ${r.status === 'WIN' ? 'bg-yellow-100 border-yellow-400' : r.status === 'LOSE' ? 'bg-gray-700 border-gray-600 grayscale' : 'bg-blue-100 border-blue-400'}`}>
+                  <div className="text-6xl mb-2">{r.choice === 'ROCK' ? '✊' : r.choice === 'PAPER' ? '🖐' : '✌️'}</div>
+                  <span className={`font-black text-lg ${r.status === 'WIN' ? 'text-yellow-700' : r.status === 'LOSE' ? 'text-gray-400' : 'text-blue-700'}`}>{r.name}</span>
+                  <span className="text-sm font-bold text-gray-500">{r.status}</span>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* 단계 4: 최종 턴 순서 발표 */}
         {gameState.step === 'RPS_RESULT' && (
           <motion.div key="rps_result" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center w-full max-w-2xl bg-gray-800 p-8 rounded-3xl border-4 border-yellow-400 shadow-2xl">
-            <h2 className="text-3xl font-black mb-6 text-white">최종 턴 순서</h2>
+            <h2 className="text-3xl font-black mb-6 text-white">최종 턴 순서 확정!</h2>
             <div className="flex flex-col gap-3">
               {gameState.players.map((p, idx) => (
                 <div key={p.id} className={`flex justify-between items-center p-4 rounded-xl text-xl font-bold ${p.id === currentUser?.id ? 'bg-blue-600 text-white' : 'bg-gray-700'}`}>
                   <span className="flex items-center gap-4">
-                    <span className="bg-yellow-500 text-yellow-900 w-8 h-8 rounded-full flex items-center justify-center text-sm">{idx + 1}</span>
+                    <span className="bg-yellow-500 text-yellow-900 w-10 h-10 rounded-full flex items-center justify-center text-lg">{idx + 1}등</span>
                     {p.name} {p.isBot && '🤖'}
                   </span>
                 </div>
               ))}
             </div>
-            <p className="mt-8 text-red-400 font-black text-xl animate-pulse">곧 본 게임이 시작됩니다!</p>
+            <p className="mt-8 text-red-400 font-black text-xl animate-pulse">곧 게임이 시작됩니다!</p>
           </motion.div>
         )}
 
-        {/* 본 게임 */}
+        {/* 단계 5: 본 게임 루프 */}
         {gameState.step === 'PLAYING' && (
-          <motion.div key="playing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col w-full h-full max-w-5xl justify-between pt-10 pb-4 relative">
+          <motion.div key="playing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col w-full h-full max-w-5xl justify-between pt-10 pb-4 relative z-10">
             
-            {/* 내 순서 알림 배너 */}
+            {/* 📢 내 턴 대형 알림 */}
             <AnimatePresence>
               {isMyTurn && !myPlayerInfo?.isEliminated && (
-                <motion.div initial={{y: -50, opacity: 0}} animate={{y: 0, opacity: 1}} exit={{opacity: 0}} className="absolute top-24 left-0 right-0 z-[100] flex justify-center pointer-events-none">
-                  <div className="bg-yellow-400 text-yellow-900 font-black text-2xl md:text-4xl px-8 py-3 rounded-full shadow-[0_0_30px_rgba(250,204,21,0.8)] animate-pulse border-4 border-white">
+                <motion.div initial={{y: -100, opacity: 0}} animate={{y: 0, opacity: 1}} exit={{opacity: 0}} className="absolute top-20 left-0 right-0 z-[100] flex justify-center pointer-events-none">
+                  <div className="bg-yellow-400 text-yellow-900 font-black text-3xl md:text-5xl px-10 py-4 rounded-full shadow-[0_0_50px_rgba(250,204,21,1)] animate-bounce border-4 border-white">
                     나의 차례입니다! 카드를 내주세요!
                   </div>
                 </motion.div>
@@ -481,52 +597,46 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
             <div className="flex justify-center gap-4 md:gap-8 mb-4">
               {gameState.players.map((p) => (
                 <div key={p.id} className={`flex flex-col items-center bg-gray-800 px-4 py-2 rounded-2xl border-4 transition-colors ${gameState.players[gameState.turnIndex].id === p.id ? 'border-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.6)]' : 'border-transparent'} ${p.isEliminated ? 'opacity-30 grayscale' : ''}`}>
-                  <div className="text-2xl mb-1">{p.isBot ? '🤖' : (p.id === currentUser?.id ? '👦' : '🧑')}</div>
+                  <div className="text-3xl mb-1">{p.isBot ? '🤖' : (p.id === currentUser?.id ? '👦' : '🧑')}</div>
                   <span className={`text-sm font-bold w-20 truncate text-center ${p.id === currentUser?.id ? 'text-yellow-300' : 'text-white'}`}>{p.name}</span>
-                  {p.isEliminated ? (
-                    <span className="text-xs text-red-500 font-black mt-1">펑! 💣</span>
-                  ) : (
-                    <span className="text-[10px] bg-blue-900 px-2 py-0.5 rounded mt-1">카드 {p.hand.length}장</span>
-                  )}
+                  {p.isEliminated ? <span className="text-xs text-red-500 font-black mt-1">탈락 💣</span> : <span className="text-[10px] bg-blue-900 px-2 py-0.5 rounded mt-1">생존</span>}
                 </div>
               ))}
             </div>
 
-            {/* 중앙 폭탄 & 메시지 */}
+            {/* 중앙 보스 및 게이지 */}
             <div className="flex-1 flex flex-col items-center justify-center relative my-4">
-              {/* 카드 제출 액션 메시지 */}
-              <div className="absolute top-0 text-xl md:text-3xl font-black text-white bg-black/50 px-6 py-2 rounded-full border border-gray-600 shadow-lg text-center min-w-[250px]">
+              <div className="absolute top-0 text-xl md:text-3xl font-black text-white px-8 py-3 rounded-full border border-white shadow-2xl text-center min-w-[300px] z-50 bg-black/60">
                 {gameState.lastActionMsg || '게임을 시작합니다!'}
               </div>
 
-              <div className={`relative w-48 h-48 md:w-64 md:h-64 rounded-full flex items-center justify-center transition-all duration-300 mt-12 ${gameState.gauge >= 90 ? 'animate-pulse scale-110 drop-shadow-[0_0_50px_rgba(239,68,68,1)]' : 'drop-shadow-[0_0_20px_rgba(255,255,255,0.2)]'}`}>
+              <div className={`relative w-48 h-48 md:w-64 md:h-64 rounded-full flex items-center justify-center transition-all duration-300 mt-16 ${gameState.gauge >= 90 ? 'scale-125 drop-shadow-[0_0_80px_rgba(239,68,68,1)]' : gameState.gauge >= 70 ? 'scale-110 drop-shadow-[0_0_40px_rgba(250,204,21,0.8)]' : 'drop-shadow-[0_0_20px_rgba(255,255,255,0.2)]'}`}>
                 {gameState.boss?.image && (
-                  <Image src={gameState.boss.image} alt="Boss" fill className="object-contain z-10 pointer-events-none" />
+                  <Image 
+                    src={encodeURI(gameState.boss.image)} 
+                    alt="Boss" 
+                    fill 
+                    unoptimized={true} 
+                    className="object-contain z-10 pointer-events-none" 
+                  />
                 )}
-                {/* 턴 방향 표시 UI */}
-                <div className="absolute inset-0 border-8 border-dashed border-gray-500 rounded-full animate-[spin_6s_linear_infinite]" style={{ animationDirection: gameState.direction === 1 ? 'normal' : 'reverse' }} />
+                <div className="absolute inset-0 border-[10px] border-dashed border-white/50 rounded-full animate-[spin_6s_linear_infinite]" style={{ animationDirection: gameState.direction === 1 ? 'normal' : 'reverse' }} />
               </div>
 
               {/* 💣 숫자 판 */}
-              <div className="mt-8 relative z-20">
-                {gameState.isBlind ? (
-                  <div className="text-7xl font-black text-gray-500 bg-gray-800 border-8 border-gray-600 px-10 py-4 rounded-[3rem] shadow-2xl">
-                    ???
-                  </div>
-                ) : (
-                  <div className={`text-8xl md:text-[8rem] font-black px-12 py-4 rounded-[3rem] shadow-2xl border-8 transition-colors ${gameState.gauge >= 90 ? 'bg-red-600 text-white border-yellow-400' : 'bg-gray-800 text-yellow-400 border-gray-600'}`}>
-                    {gameState.gauge}
-                  </div>
-                )}
-                <div className="absolute -top-6 -right-6 bg-red-500 text-white font-black px-4 py-2 rounded-full text-lg transform rotate-12 shadow-lg border-2 border-white">
-                  99 이상 펑!
+              <div className="mt-10 relative z-20">
+                <div className={`text-8xl md:text-[9rem] font-black px-12 py-2 rounded-[3rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-8 transition-colors ${gameState.gauge >= 90 ? 'bg-red-600 text-white border-yellow-400' : gameState.gauge >= 80 ? 'bg-orange-600 text-white border-white' : gameState.gauge >= 70 ? 'bg-yellow-500 text-red-900 border-white' : 'bg-gray-800 text-yellow-400 border-gray-600'}`}>
+                  {gameState.gauge}
+                </div>
+                <div className="absolute -top-6 -right-6 bg-red-500 text-white font-black px-6 py-2 rounded-full text-xl transform rotate-12 shadow-xl border-4 border-white animate-bounce">
+                  100 이상 폭발!
                 </div>
               </div>
             </div>
 
             {/* 하단 내 핸드 */}
             {myPlayerInfo && !myPlayerInfo.isEliminated && (
-              <div className={`w-full flex flex-col items-center p-4 rounded-t-[3rem] border-t-4 transition-colors ${isMyTurn ? 'bg-blue-900/50 border-blue-400 shadow-[0_-10px_30px_rgba(59,130,246,0.3)]' : 'bg-gray-800/80 border-gray-700'}`}>
+              <div className={`w-full flex flex-col items-center p-4 rounded-t-[3rem] border-t-4 transition-colors ${isMyTurn ? 'bg-blue-900/80 border-blue-400 shadow-[0_-10px_50px_rgba(59,130,246,0.5)]' : 'bg-gray-800/80 border-gray-700'}`}>
                 <div className="flex justify-between w-full max-w-3xl mb-4 px-4 items-end">
                   <span className="font-bold text-gray-400">내 카드 (항상 5장 유지)</span>
                   {isMyTurn ? (
@@ -536,41 +646,50 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                   )}
                 </div>
 
-                <div className="flex gap-2 md:gap-4 overflow-x-auto w-full max-w-4xl px-2 pb-4 scrollbar-hide items-center justify-center">
+                <div className="flex gap-2 md:gap-4 overflow-x-auto w-full max-w-4xl px-2 pb-4 scrollbar-hide items-center justify-center pt-4">
                   <AnimatePresence>
                     {myPlayerInfo.hand.map(card => {
+                      let isPlayable = true;
+                      if (card.cardType !== 'RESET' && card.cardType !== 'REVERSE' && card.cardType !== 'PASS' && card.cardType !== 'JOKER') {
+                        isPlayable = gameState.gauge + card.value <= 99;
+                      }
+
                       return (
                         <motion.div 
                           key={card.id}
-                          initial={{ y: 50, opacity: 0 }}
-                          animate={{ y: 0, opacity: 1 }}
-                          exit={{ y: -200, scale: 1.5, opacity: 0 }}
-                          whileHover={isMyTurn ? { y: -15, scale: 1.05 } : {}}
+                          initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -300, scale: 2, opacity: 0 }}
+                          whileHover={isMyTurn && isPlayable ? { y: -20, scale: 1.1 } : {}}
                           onClick={() => {
-                            if (isMyTurn) playMyCard(card.id);
+                            if (isMyTurn && isPlayable) initiateCardPlay(card);
+                            else if (isMyTurn && !isPlayable) alert('100이 넘는 카드는 낼 수 없어요! 다른 카드를 찾아보세요.');
                           }}
-                          className={`w-20 md:w-28 aspect-[3/4] rounded-2xl border-[3px] flex flex-col items-center justify-between p-2 shadow-lg relative bg-white transition-all ${isMyTurn ? 'cursor-pointer border-gray-200 hover:border-blue-500' : 'border-gray-400 grayscale opacity-80'}`}
+                          className={`w-24 md:w-32 aspect-[3/4] rounded-3xl border-4 flex flex-col items-center justify-between p-2 shadow-2xl relative bg-white transition-all ${!isPlayable ? 'opacity-40 grayscale border-gray-400' : isMyTurn ? 'cursor-pointer border-gray-200 hover:border-blue-500' : 'border-gray-400 grayscale opacity-80'}`}
                         >
                           <div className="w-full flex justify-between items-start z-10">
-                            <span className="text-[8px] bg-gray-200 text-gray-600 px-1.5 rounded font-black">{card.element}</span>
-                            <span className={`text-[10px] font-black px-1.5 rounded text-white ${
-                              card.cardType === 'PLUS' ? 'bg-red-500' : card.cardType === 'MINUS' ? 'bg-blue-500' : card.cardType === 'PASS' ? 'bg-gray-500' : 'bg-purple-600'
-                            }`}>
+                            <span className="text-[10px] bg-gray-200 text-gray-600 px-1.5 rounded font-black">{card.element}</span>
+                            <span className={`text-[10px] font-black px-1.5 rounded text-white ${card.cardType === 'PLUS' ? 'bg-red-500' : card.cardType === 'MINUS' ? 'bg-blue-500' : card.cardType === 'PASS' ? 'bg-gray-500' : 'bg-purple-600'}`}>
                               {getCardLabel(card.cardType)}
                             </span>
                           </div>
 
                           <div className="relative w-full flex-1 mt-1 mb-1 pointer-events-none">
-                            <Image src={card.image} alt={card.name} fill className="object-contain drop-shadow-md" />
+                            <Image 
+                              src={encodeURI(card.image)} 
+                              alt={card.name} 
+                              fill 
+                              unoptimized={true} 
+                              className="object-contain drop-shadow-md" 
+                            />
                           </div>
 
-                          <div className={`w-full text-center rounded-lg py-1 border-2 font-black text-sm md:text-base z-10 ${
+                          <div className={`w-full text-center rounded-xl py-1.5 border-2 font-black text-sm md:text-base z-10 ${
                             card.cardType === 'PLUS' ? 'bg-red-100 text-red-700 border-red-200' :
                             card.cardType === 'MINUS' ? 'bg-blue-100 text-blue-700 border-blue-200' :
                             card.cardType === 'PASS' ? 'bg-gray-100 text-gray-700 border-gray-200' :
                             'bg-purple-100 text-purple-700 border-purple-200 text-[10px] md:text-xs tracking-tighter'
                           }`}>
-                            {getCardValueStr(card) || getCardLabel(card.cardType)}
+                            {card.value !== 0 && card.cardType !== 'JOKER' ? (card.value > 0 ? `+${card.value}` : card.value) : ''}
+                            {card.cardType === 'JOKER' || card.cardType === 'PASS' || card.cardType === 'REVERSE' ? getCardLabel(card.cardType) : ''}
                           </div>
                         </motion.div>
                       );
@@ -582,21 +701,21 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
           </motion.div>
         )}
 
-        {/* 결과창 */}
+        {/* 단계 6: 게임 결과 */}
         {gameState.step === 'RESULT' && (
-          <motion.div key="result" initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="text-center bg-gray-800 p-12 rounded-[3rem] border-4 border-yellow-400 shadow-[0_0_50px_rgba(250,204,21,0.5)] z-50">
-            <h2 className="text-6xl mb-4">🏆</h2>
+          <motion.div key="result" initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="text-center bg-gray-800 p-12 rounded-[3rem] border-8 border-yellow-400 shadow-[0_0_80px_rgba(250,204,21,0.8)] z-50">
+            <h2 className="text-8xl mb-6">👑</h2>
             <h3 className="text-4xl font-black text-white mb-2">최후의 생존자</h3>
-            <div className="text-5xl font-black text-yellow-300 mb-10 drop-shadow-lg p-4 bg-gray-900 rounded-2xl">
+            <div className="text-6xl font-black text-yellow-300 mb-12 drop-shadow-xl p-6 bg-gray-900 rounded-3xl">
               {gameState.winnerName}
             </div>
-            <button onClick={onClose} className="w-full bg-yellow-500 hover:bg-yellow-400 text-yellow-900 font-black py-4 px-10 rounded-2xl shadow-xl active:scale-95 transition-all text-2xl">
+            <button onClick={onClose} className="w-full bg-yellow-500 hover:bg-yellow-400 text-yellow-900 font-black py-5 px-10 rounded-2xl shadow-xl active:scale-95 transition-all text-2xl">
               마을로 돌아가기
             </button>
           </motion.div>
         )}
 
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }
