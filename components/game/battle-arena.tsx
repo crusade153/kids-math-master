@@ -6,7 +6,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { Monster, UserProfile } from '@/types/game';
 import { MathProblem, Difficulty } from '@/types/math';
-import { getMonsters } from '@/actions/game-actions';
 import { getUsers } from '@/actions/user-actions';
 import { useGameStore } from '@/store/game-store';
 import { generateProblem } from '@/lib/generator';
@@ -15,6 +14,7 @@ import confetti from 'canvas-confetti';
 import { supabase } from '@/lib/supabase';
 
 interface BattleArenaProps {
+  allMonsters: Monster[];
   onClose: () => void;
   onlineUsers?: string[];
   initialOpponentId?: string;
@@ -24,7 +24,6 @@ interface BattleArenaProps {
 
 type DeckMonster = Monster & { instanceId: string; level: number };
 
-// 속성 상성 계산 (상성 시 데미지 1.5배, 역상성 시 0.5배)
 const getTypeMultiplier = (attackerType: string, defenderType: string) => {
   if (!attackerType || !defenderType) return 1.0;
   const atk = attackerType.split('/')[0].trim();
@@ -61,7 +60,6 @@ const calculateSynergy = (deck: DeckMonster[]) => {
   return { buffHp, buffAtk };
 };
 
-// 배열 파싱 안전 함수 (에러 원천 차단)
 const parseInventory = (inv: any): string[] => {
   if (!inv) return [];
   if (Array.isArray(inv)) return inv.map(item => String(item).trim());
@@ -69,7 +67,7 @@ const parseInventory = (inv: any): string[] => {
   return [];
 };
 
-const playSynthSound = (type: 'hit' | 'magic' | 'win' | 'lose') => {
+const playSynthSound = (type: 'hit' | 'magic' | 'win' | 'lose' | 'clash') => {
   try {
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContext) return;
@@ -83,6 +81,8 @@ const playSynthSound = (type: 'hit' | 'magic' | 'win' | 'lose') => {
       osc.type = 'triangle'; osc.frequency.setValueAtTime(400, now); osc.frequency.linearRampToValueAtTime(800, now + 0.3); gainNode.gain.setValueAtTime(0.2, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3); osc.start(now); osc.stop(now + 0.3);
     } else if (type === 'hit') {
       osc.type = 'square'; osc.frequency.setValueAtTime(150, now); osc.frequency.exponentialRampToValueAtTime(40, now + 0.1); gainNode.gain.setValueAtTime(0.4, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1); osc.start(now); osc.stop(now + 0.1);
+    } else if (type === 'clash') {
+      osc.type = 'sawtooth'; osc.frequency.setValueAtTime(100, now); osc.frequency.exponentialRampToValueAtTime(20, now + 0.3); gainNode.gain.setValueAtTime(1.0, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3); osc.start(now); osc.stop(now + 0.3);
     } else if (type === 'win') {
       osc.type = 'sine'; osc.frequency.setValueAtTime(440, now); osc.frequency.setValueAtTime(554, now + 0.15); osc.frequency.setValueAtTime(659, now + 0.3); gainNode.gain.setValueAtTime(0.3, now); gainNode.gain.linearRampToValueAtTime(0, now + 0.6); osc.start(now); osc.stop(now + 0.6);
     } else if (type === 'lose') {
@@ -90,6 +90,13 @@ const playSynthSound = (type: 'hit' | 'magic' | 'win' | 'lose') => {
     }
   } catch (e) {}
 };
+
+const FallbackImage = () => (
+  <div className="w-full h-full flex flex-col items-center justify-center bg-gray-800/20 rounded-lg inset-0 absolute">
+    <span className="text-5xl drop-shadow-md opacity-60">❓</span>
+    <span className="text-[10px] text-gray-500 font-black mt-2 bg-white/80 px-2 rounded">NO DATA</span>
+  </div>
+);
 
 const BattleCard = ({ monster, isOpponent, isSelectable, onClick, scale = 1, isHidden = false }: any) => {
   if (!monster) return null;
@@ -110,9 +117,9 @@ const BattleCard = ({ monster, isOpponent, isSelectable, onClick, scale = 1, isH
           <div className="absolute top-2 right-2 bg-gray-100 text-[9px] font-black px-2 py-0.5 rounded shadow z-10">{monster.type ? monster.type.split('/')[0] : '❔'}</div>
           {monster.level > 0 && <div className="absolute top-2 left-2 bg-yellow-400 text-yellow-900 text-[9px] font-black px-2 py-0.5 rounded-full shadow z-10">+{monster.level}</div>}
           <div className="relative w-full flex-1 flex items-center justify-center mt-3 pointer-events-none">
-            {monster.image ? <Image src={monster.image} alt={monster.name || 'monster'} fill className="object-contain drop-shadow-lg" /> : <div className="text-3xl">❔</div>}
+            {monster.image ? <Image src={monster.image} alt={monster.name} fill className="object-contain drop-shadow-lg" /> : <FallbackImage />}
           </div>
-          <div className="w-full text-center mt-2 h-10 flex flex-col justify-end">
+          <div className="w-full text-center mt-2 h-10 flex flex-col justify-end relative z-10">
             <h3 className="font-black text-gray-800 text-xs md:text-sm truncate w-full">{monster.name}</h3>
           </div>
         </>
@@ -121,11 +128,9 @@ const BattleCard = ({ monster, isOpponent, isSelectable, onClick, scale = 1, isH
   );
 };
 
-export default function BattleArena({ onClose, onlineUsers = [], initialOpponentId, isHost = true, roomId }: BattleArenaProps) {
+export default function BattleArena({ allMonsters, onClose, onlineUsers = [], initialOpponentId, isHost = true, roomId }: BattleArenaProps) {
   const { currentUser } = useGameStore();
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [allMonsters, setAllMonsters] = useState<Monster[]>([]);
-  const [isDataLoaded, setIsDataLoaded] = useState(false);
   
   const [battleMode, setBattleMode] = useState<'BOT' | 'PVP' | null>(null);
   const [pvpChannel, setPvpChannel] = useState<any>(null);
@@ -134,6 +139,10 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
   const [myInventoryCards, setMyInventoryCards] = useState<DeckMonster[]>([]);
   const [selectedCards, setSelectedCards] = useState<DeckMonster[]>([]);
   
+  // ⭐️ 덱 구성용 필터 상태
+  const [filterRarity, setFilterRarity] = useState<string>('ALL');
+  const [filterType, setFilterType] = useState<string>('ALL');
+
   const [playerDeck, setPlayerDeck] = useState<DeckMonster[]>([]);
   const [playerHand, setPlayerHand] = useState<DeckMonster[]>([]);
   const [opponentDeck, setOpponentDeck] = useState<DeckMonster[]>([]);
@@ -156,6 +165,7 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
   const [opponentScore, setOpponentScore] = useState(0);
   
   const [floatingTexts, setFloatingTexts] = useState<{id: number, text: string, color: string, large?: boolean}[]>([]);
+  const [hitFlash, setHitFlash] = useState(false);
   const bgmRef = useRef<HTMLAudioElement | null>(null);
 
   const pActiveSynergy = calculateSynergy(playerDeck.concat(playerHand)); 
@@ -169,32 +179,28 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
       if (bgmRef.current) { bgmRef.current.pause(); bgmRef.current.currentTime = 0; }
       if (pvpChannel) supabase.removeChannel(pvpChannel);
     };
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pvpChannel]);
 
   useEffect(() => {
-    Promise.all([getUsers(), getMonsters()]).then(([usersData, monstersData]) => {
-      setUsers(usersData.filter(u => u.id !== currentUser?.id));
-      setAllMonsters(monstersData);
-      setIsDataLoaded(true);
-    });
+    getUsers().then(data => setUsers(data.filter(u => u.id !== currentUser?.id)));
   }, [currentUser]);
 
-  // 초대 받고 들어온 경우
   useEffect(() => {
-    if (isDataLoaded && initialOpponentId && roomId && !isHost && users.length > 0) {
+    if (initialOpponentId && roomId && !isHost && users.length > 0) {
       const opp = users.find(u => u.id === initialOpponentId);
       if (opp) {
         setOpponent(opp);
         setBattleMode('PVP');
         initPvpChannel(roomId);
-        setStage('DECK_BUILDING');
+        setStage('WAITING_ACCEPT'); 
       }
     }
-  }, [isDataLoaded, initialOpponentId, roomId, users, isHost]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOpponentId, roomId, users, isHost]);
 
-  // ⭐️ 덱 빌딩 진입 시 내 인벤토리 파싱 (에러 방어)
   useEffect(() => {
-    if (stage === 'DECK_BUILDING' && currentUser && allMonsters.length > 0) {
+    if ((stage === 'DECK_BUILDING' || stage === 'SELECT') && currentUser && allMonsters.length > 0) {
       const invArray = parseInventory(currentUser.inventory);
       const myCards = invArray.map((invId, index) => {
         const [baseId, lvlStr] = String(invId).split('_'); 
@@ -213,11 +219,11 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
     }
   }, [stage, currentUser, allMonsters]);
 
-  // 양쪽 카드 선택 및 수학 풀이가 끝났을 때 승패 판정
   useEffect(() => {
     if (turnState === 'WAITING_OPP_MATH' && myBasePower !== null && oppBasePower !== null && activeOpponentCard !== null) {
       executeClash();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnState, myBasePower, oppBasePower, activeOpponentCard]);
 
   const handleSelectOpponent = (selectedUser: UserProfile) => {
@@ -226,7 +232,7 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
       setBattleMode('PVP');
       const newRoomId = `${currentUser?.id}_${selectedUser.id}`;
       initPvpChannel(newRoomId);
-      setStage('WAITING_ACCEPT');
+      setStage('WAITING_ACCEPT'); 
       supabase.channel('global_lobby').send({
         type: 'broadcast', event: 'battle_invite',
         payload: { hostId: currentUser?.id, hostName: currentUser?.name, targetId: selectedUser.id }
@@ -237,12 +243,18 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
     }
   };
 
+  // ⭐️ 버그 수정: 방 안의 인원수를 실시간으로 감지하는 Presence 방식으로 변경
   const initPvpChannel = (room: string) => {
-    const chan = supabase.channel(`battle_${room}`, { config: { presence: { key: currentUser?.id } } });
+    const chan = supabase.channel(`battle_${room}`, {
+      config: { presence: { key: currentUser?.id } }
+    });
 
     chan.on('presence', { event: 'sync' }, () => {
       const state = chan.presenceState();
-      if (Object.keys(state).length >= 2 && isHost) setStage('DECK_BUILDING');
+      // 두 명 다 채널에 접속(Track)했다면 즉시 덱 빌딩으로 넘어갑니다.
+      if (Object.keys(state).length >= 2) {
+        setStage(prev => (prev === 'WAITING_ACCEPT' || prev === 'SELECT' ? 'DECK_BUILDING' : prev));
+      }
     });
 
     chan.on('broadcast', { event: 'deck_ready' }, (p) => {
@@ -255,16 +267,11 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
       setOppBasePower(p.payload.basePower);
     });
 
-    chan.on('presence', { event: 'leave' }, () => {
-       if (stage === 'BATTLING' || stage === 'WAITING_OPP_MATH') {
-          alert("상대방이 접속을 종료했습니다! 자동 승리 🏆");
-          setPlayerScore(99999);
-          showResultScreen();
-       }
-    });
-
     chan.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') await chan.track({ ready: true });
+      if (status === 'SUBSCRIBED') {
+        // 접속 성공 시 내 존재를 방에 알립니다.
+        await chan.track({ online: true });
+      }
     });
 
     setPvpChannel(chan);
@@ -323,7 +330,6 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
       setTurnState('WAITING_OPP_MATH');
       pvpChannel?.send({ type: 'broadcast', event: 'turn_ready', payload: { card: activePlayerCard, basePower } });
     } else {
-      // 봇 대결 시 상대 카드 1장 비공개로 꺼냄 (실제론 바로 연산)
       const botCard = opponentDeck[currentTurn];
       const botBasePower = Math.round((botCard.hp * oSynergy.buffHp + botCard.attack * oSynergy.buffAtk) * (Math.random() < 0.3 ? 2.0 : 1));
       setActiveOpponentCard(botCard);
@@ -334,27 +340,36 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
 
   const executeClash = () => {
     setTurnState('CLASHING');
-    playSynthSound('hit');
     
-    const pMulti = getTypeMultiplier(activePlayerCard!.type || '', activeOpponentCard!.type || '');
-    const oMulti = getTypeMultiplier(activeOpponentCard!.type || '', activePlayerCard!.type || '');
+    setTimeout(() => {
+      setHitFlash(true);
+      playSynthSound('clash');
+      
+      const pMulti = getTypeMultiplier(activePlayerCard!.type || '', activeOpponentCard!.type || '');
+      const oMulti = getTypeMultiplier(activeOpponentCard!.type || '', activePlayerCard!.type || '');
 
-    const finalMyDmg = Math.round(myBasePower! * pMulti);
-    const finalOppDmg = Math.round(oppBasePower! * oMulti);
+      const finalMyDmg = Math.round(myBasePower! * pMulti);
+      const finalOppDmg = Math.round(oppBasePower! * oMulti);
 
-    const floats = [];
-    if (pMulti > 1) floats.push({ id: 1, text: "🔥 내 상성 우위!", color: "text-blue-400" });
-    if (oMulti > 1) floats.push({ id: 2, text: "💀 적 상성 우위!", color: "text-red-400" });
-    
-    if (finalMyDmg > finalOppDmg) floats.push({ id: 3, text: "⚔️ 턴 승리!", color: "text-yellow-400", large: true });
-    else if (finalMyDmg < finalOppDmg) floats.push({ id: 4, text: "🛡️ 턴 패배", color: "text-gray-400", large: true });
-    else floats.push({ id: 5, text: "🤝 무승부", color: "text-white", large: true });
+      const floats = [];
+      if (pMulti > 1) floats.push({ id: 1, text: "🔥 내 상성 우위!", color: "text-blue-400" });
+      if (oMulti > 1) floats.push({ id: 2, text: "💀 적 상성 우위!", color: "text-red-400" });
+      
+      if (finalMyDmg > finalOppDmg) {
+        floats.push({ id: 3, text: "⚔️ 턴 승리!", color: "text-yellow-400", large: true });
+        confetti({ particleCount: 50, spread: 60, origin: { x: 0.2, y: 0.4 }, colors: ['#fbbf24', '#f87171'] });
+      }
+      else if (finalMyDmg < finalOppDmg) floats.push({ id: 4, text: "🛡️ 턴 패배", color: "text-gray-400", large: true });
+      else floats.push({ id: 5, text: "🤝 무승부", color: "text-white", large: true });
 
-    setFloatingTexts(floats);
-    setPlayerScore(p => p + finalMyDmg);
-    setOpponentScore(p => p + finalOppDmg);
+      setFloatingTexts(floats);
+      setPlayerScore(p => p + finalMyDmg);
+      setOpponentScore(p => p + finalOppDmg);
 
-    setTimeout(() => { setTurnState('DONE'); }, 2000); 
+    }, 400); 
+
+    setTimeout(() => setHitFlash(false), 600);
+    setTimeout(() => setTurnState('DONE'), 2500); 
   };
 
   const advanceNextTurn = () => {
@@ -387,19 +402,30 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
     }
   };
 
-  if (!isDataLoaded) {
-    return (
-      <div className="fixed inset-0 bg-gray-900/95 z-[90] flex flex-col items-center justify-center p-4 backdrop-blur-md">
-        <div className="text-6xl animate-spin mb-6">📡</div>
-        <h2 className="text-2xl font-black text-white animate-pulse">데이터 로딩 중...</h2>
-      </div>
-    );
-  }
+  // ⭐️ 덱 구성 시 필터링 처리
+  const rarities = [
+    { id: 'ALL', label: '전체 등급' },
+    { id: 'COMMON', label: '일반' },
+    { id: 'RARE', label: '희귀' },
+    { id: 'LEGENDARY', label: '전설' },
+    { id: 'MYTHICAL', label: '환상' }
+  ];
+
+  const availableTypes = ['ALL', ...Array.from(new Set(myInventoryCards.filter(c => filterRarity === 'ALL' || c.rarity === filterRarity).map(c => c.type ? c.type.split('/')[0] : '노말')))];
+
+  const filteredCards = myInventoryCards.filter(c => {
+    const cType = c.type ? c.type.split('/')[0] : '노말';
+    const matchRarity = filterRarity === 'ALL' || c.rarity === filterRarity;
+    const matchType = filterType === 'ALL' || cType === filterType;
+    return matchRarity && matchType;
+  });
 
   return (
-    <div className="fixed inset-0 bg-gray-900/95 z-[90] flex flex-col items-center justify-center p-4 backdrop-blur-md overflow-hidden touch-none">
-      
-      {/* ⭐️ 절대 씹히지 않는 최상단 X 버튼 */}
+    <motion.div 
+      animate={hitFlash ? { x: [-10, 10, -10, 10, 0], y: [-10, 10, -10, 10, 0] } : {}} 
+      transition={{ duration: 0.3 }}
+      className={`fixed inset-0 z-[90] flex flex-col items-center justify-center p-4 backdrop-blur-md overflow-hidden touch-none transition-colors duration-100 ${hitFlash ? 'bg-red-600/90' : 'bg-gray-900/95'}`}
+    >
       <button 
         onClick={onClose} 
         className="fixed top-6 right-6 text-5xl text-white hover:text-red-500 transition-transform z-[99999] cursor-pointer drop-shadow-md bg-black/20 rounded-full w-14 h-14 flex items-center justify-center"
@@ -408,7 +434,6 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
       </button>
 
       <AnimatePresence mode="wait">
-        
         {stage === 'SELECT' && (
           <motion.div key="select" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-center w-full max-w-4xl h-full py-12 overflow-y-auto custom-scrollbar pt-20">
             <h2 className="text-4xl font-black text-white mb-8 drop-shadow-lg">⚔️ 대결할 상대를 선택하세요!</h2>
@@ -438,8 +463,10 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
         {stage === 'WAITING_ACCEPT' && (
           <motion.div key="wait-accept" initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="text-center">
             <div className="text-7xl mb-6 animate-bounce">📨</div>
-            <h2 className="text-4xl font-black text-white mb-4 leading-tight">{opponent?.name}님에게<br/>초대장을 보냈습니다!</h2>
-            <p className="text-yellow-300 font-bold mb-8">상대방이 수락할 때까지 기다려주세요...</p>
+            <h2 className="text-4xl font-black text-white mb-4 leading-tight">
+              {isHost ? `${opponent?.name}님의 수락 대기중...` : '배틀 방 입장 준비 중...'}
+            </h2>
+            <p className="text-yellow-300 font-bold mb-8">잠시만 기다려주세요 🚀</p>
           </motion.div>
         )}
 
@@ -471,21 +498,44 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
             </div>
             <div className="h-px bg-gray-700 w-full my-4"></div>
             
-            <h3 className="text-gray-400 font-bold mb-4">보유 몬스터 (클릭하여 추가/제거)</h3>
+            {/* ⭐️ 필터 영역 추가 */}
+            <div className="flex flex-col gap-2 mb-4">
+              <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                {rarities.map(r => (
+                  <button key={r.id} onClick={() => { setFilterRarity(r.id); setFilterType('ALL'); }} className={`px-4 py-1.5 rounded-full text-xs font-black whitespace-nowrap transition-all shadow-md ${filterRarity === r.id ? 'bg-blue-500 text-white border-2 border-blue-300' : 'bg-gray-800 text-gray-300 border-2 border-transparent hover:bg-gray-700'}`}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                {availableTypes.map(t => (
+                  <button key={t} onClick={() => setFilterType(t)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap transition-all border border-gray-600 ${filterType === t ? 'bg-green-500 text-white' : 'bg-gray-900 text-gray-400 hover:bg-gray-700'}`}>
+                    {t === 'ALL' ? '모든 속성' : t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3 overflow-y-auto flex-1 custom-scrollbar pb-10 content-start">
-              {myInventoryCards && myInventoryCards.map((card) => {
-                if (!card) return null; // 빈 데이터 방어
+              {filteredCards.map((card) => {
+                if (!card) return null; 
                 const isSelected = selectedCards.some(c => c.instanceId === card.instanceId);
                 return (
                   <motion.div key={card.instanceId} whileHover={{ scale: 1.05 }} onClick={() => toggleCardSelection(card)}
-                    className={`bg-white p-2 rounded-xl border-2 cursor-pointer transition-all flex flex-col items-center aspect-[3/4] ${isSelected ? 'border-red-500 opacity-50' : 'border-gray-200'}`}>
-                    <div className="relative w-full flex-1 mb-1">
-                      {card.image ? <Image src={card.image} alt={card.name || 'card'} fill className="object-contain" /> : <div className="text-3xl text-center">❔</div>}
+                    className={`bg-white p-2 rounded-xl border-2 cursor-pointer transition-all flex flex-col items-center aspect-[3/4] relative ${isSelected ? 'border-red-500 opacity-50' : 'border-gray-200 hover:border-blue-400'}`}>
+                    {isSelected && <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/30 rounded-lg"><span className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">선택됨</span></div>}
+                    <div className="relative w-full flex-1 mb-1 pointer-events-none">
+                      {card.image ? <Image src={card.image} alt={card.name} fill className="object-contain" /> : <FallbackImage />}
                     </div>
-                    <span className="font-black text-[10px] truncate w-full text-center">{card.name}</span>
+                    <div className="w-full text-center shrink-0">
+                      <h3 className="font-black text-[10px] text-gray-800 truncate leading-tight w-full relative z-10">{card.name}</h3>
+                    </div>
                   </motion.div>
                 );
               })}
+              {filteredCards.length === 0 && (
+                <div className="col-span-full text-center text-gray-500 font-bold py-10">조건에 맞는 포켓몬이 없습니다 😢</div>
+              )}
             </div>
           </motion.div>
         )}
@@ -497,7 +547,6 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
           </motion.div>
         )}
 
-        {/* 메인 전투 무대 */}
         {stage === 'BATTLING' && (
           <motion.div key="battle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-between w-full h-full pt-16 pb-4 relative">
             
@@ -518,27 +567,43 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
             <div className="flex-1 flex flex-col justify-center items-center w-full relative">
               <div className="flex gap-10 items-center justify-center w-full">
                 
-                <div className="flex flex-col items-center flex-1">
+                <div className="flex flex-col items-center flex-1 z-20">
                   <span className="text-blue-400 font-bold mb-2">내 몬스터</span>
                   {activePlayerCard ? (
-                    <motion.div animate={turnState === 'CLASHING' ? { x: [0, 50, 0] } : {}}>
+                    <motion.div animate={turnState === 'CLASHING' ? { 
+                      x: [0, 80, -20, 0], 
+                      y: [0, -40, 10, 0], 
+                      scale: [1, 1.4, 0.9, 1], 
+                      rotate: [0, 15, -10, 0] 
+                    } : {}}
+                    transition={{ duration: 0.8, times: [0, 0.4, 0.6, 1], ease: "easeInOut" }}>
                       <BattleCard monster={activePlayerCard} scale={1.2} />
                     </motion.div>
                   ) : (
-                    <div className="w-28 h-36 border-4 border-dashed border-gray-600 rounded-3xl flex items-center justify-center text-gray-500 font-bold">선택 대기중</div>
+                    <div className="w-28 h-36 border-4 border-dashed border-gray-600 rounded-3xl flex items-center justify-center text-gray-500 font-bold bg-gray-800/50">선택 대기중</div>
                   )}
                 </div>
 
-                <div className="text-4xl font-black text-gray-600 italic px-4">VS</div>
+                {hitFlash ? (
+                  <div className="text-7xl font-black text-yellow-300 italic px-4 drop-shadow-[0_0_30px_rgba(253,224,71,1)] z-10 animate-ping">💥</div>
+                ) : (
+                  <div className="text-4xl font-black text-gray-600 italic px-4 z-10">VS</div>
+                )}
 
-                <div className="flex flex-col items-center flex-1">
+                <div className="flex flex-col items-center flex-1 z-20">
                   <span className="text-red-400 font-bold mb-2">적 몬스터</span>
                   {activeOpponentCard || battleMode === 'BOT' ? (
-                    <motion.div animate={turnState === 'CLASHING' ? { x: [0, -50, 0] } : {}}>
+                    <motion.div animate={turnState === 'CLASHING' ? { 
+                      x: [0, -80, 20, 0], 
+                      y: [0, 40, -10, 0], 
+                      scale: [1, 1.4, 0.9, 1], 
+                      rotate: [0, -15, 10, 0] 
+                    } : {}}
+                    transition={{ duration: 0.8, times: [0, 0.4, 0.6, 1], ease: "easeInOut" }}>
                       <BattleCard monster={activeOpponentCard || opponentDeck[currentTurn]} isOpponent scale={1.2} isHidden={turnState !== 'DONE' && turnState !== 'CLASHING'} />
                     </motion.div>
                   ) : (
-                    <div className="w-28 h-36 border-4 border-dashed border-gray-600 rounded-3xl flex items-center justify-center">
+                    <div className="w-28 h-36 border-4 border-dashed border-gray-600 rounded-3xl flex items-center justify-center bg-gray-800/50">
                        <span className="animate-pulse text-gray-500 text-sm font-bold">카드 선택중...</span>
                     </div>
                   )}
@@ -548,7 +613,7 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
 
               <AnimatePresence>
                 {floatingTexts.map((float, index) => (
-                  <motion.div key={float.id} initial={{ y: 50, opacity: 0 }} animate={{ y: -50 - (index * 30), opacity: 1 }} exit={{ opacity: 0 }} transition={{ type: 'spring' }} className={`absolute font-black drop-shadow-[0_5px_5px_rgba(0,0,0,1)] z-50 ${float.color} ${float.large ? 'text-4xl md:text-5xl' : 'text-xl'}`}>
+                  <motion.div key={float.id} initial={{ y: 50, opacity: 0, scale: 0.5 }} animate={{ y: -60 - (index * 40), opacity: 1, scale: 1 }} exit={{ opacity: 0 }} transition={{ type: 'spring', stiffness: 200 }} className={`absolute font-black drop-shadow-[0_5px_10px_rgba(0,0,0,1)] z-50 ${float.color} ${float.large ? 'text-4xl md:text-5xl' : 'text-2xl md:text-3xl'}`}>
                     {float.text}
                   </motion.div>
                 ))}
@@ -556,15 +621,14 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
 
               {turnState === 'DONE' && (
                 <motion.button initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} onClick={advanceNextTurn} 
-                  className="absolute bottom-0 z-30 bg-white text-gray-900 font-black text-xl py-3 px-8 rounded-full shadow-[0_5px_0_rgba(209,213,219,1)] active:translate-y-1 active:shadow-none"
+                  className="absolute bottom-10 z-50 bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-black text-xl py-4 px-10 rounded-full shadow-[0_5px_0_rgba(30,58,138,1)] active:translate-y-1 active:shadow-none hover:brightness-110"
                 >
                   {currentTurn >= 9 ? '최종 결과 확인 🏆' : '다음 라운드 ⏭️'}
                 </motion.button>
               )}
             </div>
 
-            {/* 내 패 */}
-            <div className="w-full flex flex-col items-center justify-end z-20 min-h-[12rem] bg-gray-800/80 rounded-t-3xl pt-4 pb-2 border-t-4 border-gray-600">
+            <div className="w-full flex flex-col items-center justify-end z-20 min-h-[12rem] bg-gray-800/80 rounded-t-3xl pt-4 pb-2 border-t-4 border-gray-600 shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
               {turnState === 'CARD_SELECT' ? (
                 <>
                   <div className="text-yellow-300 font-black mb-2 animate-pulse">출전할 카드를 고르세요! (블라인드)</div>
@@ -581,26 +645,24 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
               )}
             </div>
 
-            {/* 마법 선택 모달 */}
             <AnimatePresence>
               {turnState === 'DIFFICULTY_SELECT' && (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4">
                   <h2 className="text-3xl font-black text-white mb-8 text-center drop-shadow-lg">어떤 마법을 사용할까? 🔮</h2>
                   <div className="flex flex-col gap-4 w-full max-w-sm">
-                    <button onClick={() => { setSpellMultiplier(1.5); setAttackProblem(generateProblem('ADD', 'LEVEL_1')); setTurnState('MATH_SOLVE'); }} className="bg-green-500 text-white font-black py-4 px-6 rounded-2xl">🟢 1단계 (데미지 1.5배)</button>
-                    <button onClick={() => { setSpellMultiplier(2.0); setAttackProblem(generateProblem('ADD', 'LEVEL_2')); setTurnState('MATH_SOLVE'); }} className="bg-yellow-500 text-white font-black py-4 px-6 rounded-2xl">🟡 2단계 (데미지 2.0배)</button>
-                    <button onClick={() => { setSpellMultiplier(3.0); setAttackProblem(generateProblem('MUL', 'LEVEL_1')); setTurnState('MATH_SOLVE'); }} className="bg-red-500 text-white font-black py-4 px-6 rounded-2xl">🔴 구구단 (데미지 3.0배)</button>
-                    <button onClick={() => { setActivePlayerCard(null); setTurnState('CARD_SELECT'); }} className="mt-2 text-gray-400 font-bold underline">취소</button>
+                    <button onClick={() => { setSpellMultiplier(1.5); setAttackProblem(generateProblem('ADD', 'LEVEL_1')); setTurnState('MATH_SOLVE'); }} className="bg-green-500 text-white font-black py-4 px-6 rounded-2xl shadow-lg active:scale-95 transition-transform">🟢 1단계 (데미지 1.5배)</button>
+                    <button onClick={() => { setSpellMultiplier(2.0); setAttackProblem(generateProblem('ADD', 'LEVEL_2')); setTurnState('MATH_SOLVE'); }} className="bg-yellow-500 text-white font-black py-4 px-6 rounded-2xl shadow-lg active:scale-95 transition-transform">🟡 2단계 (데미지 2.0배)</button>
+                    <button onClick={() => { setSpellMultiplier(3.0); setAttackProblem(generateProblem('MUL', 'LEVEL_1')); setTurnState('MATH_SOLVE'); }} className="bg-red-500 text-white font-black py-4 px-6 rounded-2xl shadow-lg active:scale-95 transition-transform">🔴 구구단 (데미지 3.0배)</button>
+                    <button onClick={() => { setActivePlayerCard(null); setTurnState('CARD_SELECT'); }} className="mt-4 text-gray-400 font-bold underline px-4 py-2">← 다른 카드 선택하기</button>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {/* 수학 문제 풀이 */}
             {turnState === 'MATH_SOLVE' && attackProblem && (
               <div className="absolute inset-0 z-[60] flex flex-col items-center justify-center bg-black/90 p-4">
-                <div className="text-5xl font-mono font-black text-white mb-6 border-4 border-yellow-400 bg-indigo-700/80 p-6 rounded-3xl text-center">
-                  {attackProblem.operandA} {attackProblem.type === 'ADD' ? '+' : attackProblem.type === 'SUB' ? '-' : 'x'} {attackProblem.operandB} = <span className="text-yellow-300">{attackInput || '?'}</span>
+                <div className="text-5xl font-mono font-black text-white mb-6 border-4 border-yellow-400 bg-indigo-700/80 p-6 rounded-3xl text-center shadow-[0_0_30px_rgba(99,102,241,0.8)]">
+                  {attackProblem.operandA} {attackProblem.type === 'ADD' ? '+' : attackProblem.type === 'SUB' ? '-' : 'x'} {attackProblem.operandB} = <span className="text-yellow-300 animate-pulse">{attackInput || '?'}</span>
                 </div>
                 <NumberPad onInput={(num) => setAttackInput(p => p.length < 3 ? p + num : p)} onDelete={() => setAttackInput(p => p.slice(0, -1))} onEnter={() => { if (attackInput) handleMathSolved(parseInt(attackInput) === attackProblem.answer); }} />
               </div>
@@ -609,18 +671,26 @@ export default function BattleArena({ onClose, onlineUsers = [], initialOpponent
         )}
 
         {stage === 'RESULT' && (
-          <motion.div key="result" initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} className="text-center bg-gray-800 p-12 rounded-[3rem] shadow-2xl relative border-4 border-gray-600 z-50">
-            <h2 className="text-5xl font-black mb-4 z-10 relative text-white">
-              {playerScore > opponentScore ? '🏆 승리! 🏆' : playerScore < opponentScore ? '💀 패배' : '🤝 무승부'}
+          <motion.div key="result" initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} className="text-center bg-gray-800 p-12 rounded-[3rem] shadow-[0_0_50px_rgba(0,0,0,0.8)] relative border-4 border-gray-600 z-50 w-full max-w-lg">
+            <h2 className="text-5xl font-black mb-6 z-10 relative text-white drop-shadow-xl">
+              {playerScore > opponentScore ? '🏆 완벽한 승리! 🏆' : playerScore < opponentScore ? '💀 아쉬운 패배' : '🤝 치열한 무승부'}
             </h2>
-            <div className="text-3xl font-bold text-gray-300 mb-8">
-              내 최종 점수 <span className={playerScore >= opponentScore ? "text-blue-400" : ""}>{playerScore.toLocaleString()}</span><br/>
-              적 최종 점수 <span className={opponentScore >= playerScore ? "text-red-400" : ""}>{opponentScore.toLocaleString()}</span>
+            <div className="bg-gray-900 rounded-2xl p-6 mb-8 border border-gray-700">
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-gray-400 font-bold">내 최종 점수</span>
+                <span className={`text-4xl font-black ${playerScore >= opponentScore ? "text-blue-400" : "text-white"}`}>{playerScore.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 font-bold">적 최종 점수</span>
+                <span className={`text-4xl font-black ${opponentScore >= playerScore ? "text-red-400" : "text-white"}`}>{opponentScore.toLocaleString()}</span>
+              </div>
             </div>
-            <button onClick={onClose} className="bg-white text-gray-900 font-black py-4 px-12 rounded-full text-xl hover:scale-105 transition-transform pointer-events-auto">마을로 돌아가기</button>
+            <button onClick={onClose} className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 text-yellow-900 font-black py-4 px-12 rounded-full text-xl hover:scale-105 active:scale-95 transition-transform shadow-xl">
+              마을로 금의환향
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }

@@ -5,18 +5,17 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { Monster } from '@/types/game';
-import { getMonsters } from '@/actions/game-actions';
 import { getBossStatus, attackBoss, resetBoss, distributeBossKillReward } from '@/actions/boss-actions';
 import { useGameStore } from '@/store/game-store';
 import confetti from 'canvas-confetti';
 
 interface BossRaidProps {
+  allMonsters: Monster[];
   onClose: () => void;
 }
 
 type DeckMonster = Monster & { instanceId: string; level: number };
 
-// 레이드용 시너지 (오직 '공격력' 위주의 버프로 통일)
 const calculateRaidSynergy = (deck: DeckMonster[]) => {
   const counts: Record<string, number> = {};
   deck.forEach(m => {
@@ -69,17 +68,26 @@ const playSynthSound = (type: 'swing' | 'hit' | 'critical' | 'win' | 'click' | '
   } catch (e) {}
 };
 
-export default function BossRaid({ onClose }: BossRaidProps) {
+const FallbackImage = ({ large = false }: { large?: boolean }) => (
+  <div className={`w-full h-full flex flex-col items-center justify-center bg-gray-800/50 rounded-lg absolute inset-0 ${large ? 'rounded-full' : ''}`}>
+    <span className={`${large ? 'text-8xl' : 'text-4xl'} drop-shadow-md opacity-40`}>❓</span>
+    {!large && <span className="text-[10px] text-gray-500 font-black mt-2 bg-white/80 px-2 rounded">NO DATA</span>}
+  </div>
+);
+
+export default function BossRaid({ allMonsters, onClose }: BossRaidProps) {
   const { currentUser, addCoins } = useGameStore();
   
-  const [allMonsters, setAllMonsters] = useState<Monster[]>([]);
   const [myInventoryCards, setMyInventoryCards] = useState<DeckMonster[]>([]);
   const [selectedCards, setSelectedCards] = useState<DeckMonster[]>([]);
   
+  // ⭐️ 덱 구성용 필터 상태
+  const [filterRarity, setFilterRarity] = useState<string>('ALL');
+  const [filterType, setFilterType] = useState<string>('ALL');
+
   const [stage, setStage] = useState<'DECK_BUILDING' | 'RAIDING' | 'RESULT'>('DECK_BUILDING');
   
   const [bossMonster, setBossMonster] = useState<Monster | null>(null);
-  // ⭐️ 초기 UI값을 50만으로 설정
   const [bossHp, setBossHp] = useState(500000);
   const [bossMaxHp, setBossMaxHp] = useState(500000);
   const [hitEffect, setHitEffect] = useState(false); 
@@ -91,7 +99,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
   
   const [showSynergyHint, setShowSynergyHint] = useState(false);
 
-  // ⭐️ 덱을 구성할 때 실시간으로 보여줄 공격력 버프 시너지
   const pSynergy = calculateRaidSynergy(selectedCards);
   const bgmRef = useRef<HTMLAudioElement | null>(null);
 
@@ -109,34 +116,37 @@ export default function BossRaid({ onClose }: BossRaidProps) {
   }, []);
 
   useEffect(() => {
-    getMonsters().then(data => {
-      setAllMonsters(data);
-      if (currentUser) {
-        const myCards = currentUser.inventory.map((invId, index) => {
-          const [baseId, lvlStr] = invId.split('_');
-          const level = parseInt(lvlStr || '0', 10);
-          const m = data.find(x => x.id === baseId);
-          if (!m) return null;
-          const buff = 1 + (0.2 * level);
-          return {
-            ...m,
-            hp: Math.round(m.hp * buff),
-            attack: Math.round(m.attack * buff),
-            name: level > 0 ? `${m.name} +${level}` : m.name,
-            instanceId: `my-${invId}-${index}`,
-            level: level
-          };
-        }).filter(Boolean) as DeckMonster[];
-        
-        while(myCards.length < 10) {
-          const fallback = data.filter(m => m.rarity === 'COMMON')[0] || data[0];
-          if(fallback) {
-              myCards.push({ ...fallback, instanceId: `fallback-${Math.random()}`, level: 0 });
-          }
+    if (currentUser && allMonsters.length > 0) {
+      const invList = Array.isArray(currentUser.inventory) 
+        ? currentUser.inventory 
+        : typeof currentUser.inventory === 'string' 
+          ? (currentUser.inventory as string).replace(/[{}[\]"']/g, '').split(',').map(s => s.trim()) 
+          : [];
+
+      const myCards = invList.map((invId, index) => {
+        const [baseId, lvlStr] = String(invId).split('_');
+        const level = parseInt(lvlStr || '0', 10);
+        const m = allMonsters.find(x => x.id === baseId);
+        if (!m) return null;
+        const buff = 1 + (0.2 * level);
+        return {
+          ...m,
+          hp: Math.round(m.hp * buff),
+          attack: Math.round(m.attack * buff),
+          name: level > 0 ? `${m.name} +${level}` : m.name,
+          instanceId: `my-${invId}-${index}`,
+          level: level
+        };
+      }).filter(Boolean) as DeckMonster[];
+      
+      while(myCards.length < 10) {
+        const fallback = allMonsters.filter(m => m.rarity === 'COMMON')[0] || allMonsters[0];
+        if(fallback) {
+            myCards.push({ ...fallback, instanceId: `fallback-${Math.random()}`, level: 0 });
         }
-        setMyInventoryCards(myCards);
       }
-    });
+      setMyInventoryCards(myCards);
+    }
 
     const fetchBoss = async () => {
       const status = await getBossStatus();
@@ -147,7 +157,7 @@ export default function BossRaid({ onClose }: BossRaidProps) {
     fetchBoss();
     const interval = setInterval(fetchBoss, 5000);
     return () => clearInterval(interval);
-  }, [currentUser]);
+  }, [currentUser, allMonsters]);
 
   const toggleCardSelection = (card: DeckMonster) => {
     const isSelected = selectedCards.find(c => c.instanceId === card.instanceId);
@@ -172,7 +182,7 @@ export default function BossRaid({ onClose }: BossRaidProps) {
     playSynthSound('boss_roar');
 
     if (bgmRef.current) {
-      bgmRef.current.play().catch((e) => console.log('BGM 재생 차단됨:', e)); 
+      bgmRef.current.play().catch(() => {}); 
     }
   };
 
@@ -185,8 +195,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
     const isCrit = Math.random() < 0.2;
     const variance = (Math.random() * 0.4) + 0.8; 
     
-    // ⭐️ 보스 레이드 데미지 연산: (기본 HP + 기본 공격력) * 시너지의 공격력 버프 계수 * 난수 * 10
-    // 시너지가 제대로 적용되어 데미지가 뻥튀기 됩니다.
     let damage = Math.round((attacker.hp + attacker.attack) * pSynergy.buffAtk * variance * 10);
     if (isCrit) damage = Math.round(damage * 2);
 
@@ -236,13 +244,30 @@ export default function BossRaid({ onClose }: BossRaidProps) {
     }
   };
 
+  // ⭐️ 덱 구성 시 필터링 처리
+  const rarities = [
+    { id: 'ALL', label: '전체 등급' },
+    { id: 'COMMON', label: '일반' },
+    { id: 'RARE', label: '희귀' },
+    { id: 'LEGENDARY', label: '전설' },
+    { id: 'MYTHICAL', label: '환상' }
+  ];
+
+  const availableTypes = ['ALL', ...Array.from(new Set(myInventoryCards.filter(c => filterRarity === 'ALL' || c.rarity === filterRarity).map(c => c.type ? c.type.split('/')[0] : '노말')))];
+
+  const filteredCards = myInventoryCards.filter(c => {
+    const cType = c.type ? c.type.split('/')[0] : '노말';
+    const matchRarity = filterRarity === 'ALL' || c.rarity === filterRarity;
+    const matchType = filterType === 'ALL' || cType === filterType;
+    return matchRarity && matchType;
+  });
+
   return (
     <div className={`fixed inset-0 z-[90] flex flex-col items-center justify-center p-4 backdrop-blur-xl touch-none overflow-hidden transition-colors duration-100 ${hitEffect ? 'bg-red-600/80' : 'bg-red-950/95'}`}>
       <button onClick={onClose} className="absolute top-6 right-6 text-4xl text-white hover:text-red-400 transition-transform hover:scale-110 z-[100]">
         ✖
       </button>
 
-      {/* ⭐️ 레이드용 시너지 툴팁 모달 */}
       <AnimatePresence>
         {showSynergyHint && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} className="absolute z-[100] top-24 bg-gray-900 border-2 border-red-500 p-6 rounded-2xl shadow-2xl w-full max-w-sm text-white">
@@ -288,7 +313,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
               </button>
             </div>
 
-            {/* 상단 덱 슬롯 */}
             <div className="flex gap-2 overflow-x-auto pb-4 scrollbar-hide items-center">
               {Array.from({ length: 10 }).map((_, i) => {
                 const card = selectedCards[i];
@@ -298,8 +322,8 @@ export default function BossRaid({ onClose }: BossRaidProps) {
                     {card ? (
                       <>
                         {card.level > 0 && <span className="absolute -top-2 -left-2 text-[9px] bg-yellow-400 text-yellow-900 font-black px-1.5 py-0.5 rounded-full z-10 shadow">+{card.level}</span>}
-                        <div className="relative w-10 h-10 md:w-14 md:h-14 flex items-center justify-center bg-white rounded-full shadow-sm mb-1">
-                          {card.image ? <Image src={card.image} alt={card.name} fill className="object-contain p-1 drop-shadow-md" /> : <span className="text-xl text-gray-400">❔</span>}
+                        <div className="relative w-10 h-10 md:w-14 md:h-14 flex items-center justify-center bg-white rounded-full shadow-sm mb-1 overflow-hidden pointer-events-none">
+                          {card.image ? <Image src={card.image} alt={card.name} fill className="object-contain p-1 drop-shadow-md" /> : <FallbackImage />}
                         </div>
                         <span className="text-[9px] md:text-[10px] font-black text-white truncate w-[90%] text-center">{card.name}</span>
                       </>
@@ -313,11 +337,26 @@ export default function BossRaid({ onClose }: BossRaidProps) {
 
             <div className="h-px bg-red-900 w-full my-4"></div>
 
-            <h3 className="text-gray-400 font-bold mb-4">보유 몬스터 (클릭하여 추가/제거)</h3>
+            {/* ⭐️ 필터 영역 추가 */}
+            <div className="flex flex-col gap-2 mb-4">
+              <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                {rarities.map(r => (
+                  <button key={r.id} onClick={() => { setFilterRarity(r.id); setFilterType('ALL'); }} className={`px-4 py-1.5 rounded-full text-xs font-black whitespace-nowrap transition-all shadow-md ${filterRarity === r.id ? 'bg-yellow-400 text-yellow-900 border-2 border-yellow-200' : 'bg-gray-700 text-gray-300 border-2 border-transparent hover:bg-gray-600'}`}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                {availableTypes.map(t => (
+                  <button key={t} onClick={() => setFilterType(t)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap transition-all border border-gray-600 ${filterType === t ? 'bg-red-500 text-white shadow-md' : 'bg-gray-900 text-gray-400 hover:bg-gray-700'}`}>
+                    {t === 'ALL' ? '모든 속성' : t}
+                  </button>
+                ))}
+              </div>
+            </div>
             
-            {/* ⭐️ 하단 인벤토리: aspect-[3/4] 및 flex-1 구조로 늘어짐 방지 */}
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3 overflow-y-auto flex-1 custom-scrollbar pb-10 content-start">
-              {myInventoryCards.map((card) => {
+              {filteredCards.map((card) => {
                 const isSelected = selectedCards.some(c => c.instanceId === card.instanceId);
                 return (
                   <motion.div 
@@ -329,11 +368,11 @@ export default function BossRaid({ onClose }: BossRaidProps) {
                     {card.level > 0 && <span className="absolute -top-2 -left-2 bg-yellow-400 text-yellow-900 text-[10px] font-black px-1.5 py-0.5 rounded-full z-20 shadow">+{card.level}</span>}
                     {isSelected && <div className="absolute inset-0 flex items-center justify-center z-10 bg-black/30 rounded-xl"><span className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">선택됨</span></div>}
                     
-                    <div className="relative w-full flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden border border-gray-700 mt-1 min-h-0">
+                    <div className="relative w-full flex-1 flex items-center justify-center bg-gray-900 rounded-lg overflow-hidden border border-gray-700 mt-1 min-h-0 pointer-events-none">
                       {card.image ? (
                         <Image src={card.image} alt={card.name} fill className="object-contain p-1" />
                       ) : (
-                        <span className="text-3xl text-gray-500">❔</span>
+                        <FallbackImage />
                       )}
                     </div>
                     
@@ -348,6 +387,9 @@ export default function BossRaid({ onClose }: BossRaidProps) {
                   </motion.div>
                 );
               })}
+              {filteredCards.length === 0 && (
+                <div className="col-span-full text-center text-gray-500 font-bold py-10">조건에 맞는 포켓몬이 없습니다 😢</div>
+              )}
             </div>
           </motion.div>
         )}
@@ -359,7 +401,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
                 {bossMonster ? bossMonster.name : '미지의 몬스터'}
               </h2>
               
-              {/* 보스 체력 바 */}
               <div className="w-full bg-gray-900 h-10 rounded-full border-[6px] border-black overflow-hidden relative shadow-[0_0_50px_rgba(220,38,38,0.8)]">
                 <motion.div 
                   className="h-full bg-gradient-to-r from-red-800 via-red-500 to-yellow-500"
@@ -386,7 +427,7 @@ export default function BossRaid({ onClose }: BossRaidProps) {
                 {bossMonster?.image ? (
                   <Image src={bossMonster.image} alt={bossMonster.name} fill className="object-contain drop-shadow-[0_30px_50px_rgba(0,0,0,0.9)] z-10 pointer-events-none" priority />
                 ) : (
-                  <div className="text-[15rem] text-center drop-shadow-2xl z-10">🐉</div>
+                  <FallbackImage large />
                 )}
               </motion.div>
 
@@ -425,7 +466,7 @@ export default function BossRaid({ onClose }: BossRaidProps) {
                       {selectedCards[currentTurn]?.image ? (
                         <Image src={selectedCards[currentTurn].image} alt="" fill className="object-contain drop-shadow-xl" draggable={false} />
                       ) : (
-                        <span className="text-6xl text-gray-300">❔</span>
+                        <FallbackImage />
                       )}
                     </div>
                     <div className="w-full h-[60px] flex flex-col items-center justify-end shrink-0">
@@ -459,10 +500,8 @@ export default function BossRaid({ onClose }: BossRaidProps) {
               {isBossKilled ? (
                 <>
                   <div className="text-xl font-bold text-gray-300 mb-1">기본 참여 보상: 🪙 10</div>
-                  {/* ⭐️ 보상 텍스트를 300에서 200으로 변경 */}
                   <div className="text-xl font-bold text-yellow-400 mb-4 animate-pulse">전체 토벌 보상: 🪙 200</div>
                   <div className="h-px w-full bg-gray-600 mb-4"></div>
-                  {/* ⭐️ 총 코인을 310에서 210으로 변경 */}
                   <div className="text-4xl font-black text-yellow-300">총 🪙 +210 코인!</div>
                 </>
               ) : (
@@ -471,7 +510,6 @@ export default function BossRaid({ onClose }: BossRaidProps) {
             </div>
 
             <button onClick={() => {
-              // ⭐️ 실제 로컬 유저에게 더해지는 코인도 310에서 210으로 변경
               addCoins(isBossKilled ? 210 : 10); 
               onClose();
             }} className="w-full bg-gradient-to-r from-red-600 to-orange-500 text-white font-black py-4 rounded-full text-xl hover:scale-105 active:scale-95 transition-all z-10 relative shadow-xl">
