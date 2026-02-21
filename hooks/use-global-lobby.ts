@@ -5,7 +5,7 @@ import { UserProfile } from '@/types/game';
 
 export function useGlobalLobby(currentUser: UserProfile | null) {
   const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
-  const [incomingInvite, setIncomingInvite] = useState<{ hostId: string, hostName: string } | null>(null);
+  const [incomingInvite, setIncomingInvite] = useState<{ hostId: string, hostName: string, gameType: 'ARENA' | 'BOMB' } | null>(null);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -21,7 +21,11 @@ export function useGlobalLobby(currentUser: UserProfile | null) {
 
     channel.on('broadcast', { event: 'battle_invite' }, (payload) => {
       if (payload.payload.targetId === currentUser.id) {
-        setIncomingInvite({ hostId: payload.payload.hostId, hostName: payload.payload.hostName });
+        setIncomingInvite({ 
+          hostId: payload.payload.hostId, 
+          hostName: payload.payload.hostName,
+          gameType: payload.payload.gameType || 'ARENA'
+        });
       }
     });
 

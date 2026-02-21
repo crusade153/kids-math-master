@@ -11,6 +11,7 @@ import MotionCard from '@/components/ui/motion-card';
 import EggHatch from '@/components/game/egg-hatch';
 import CollectionBook from '@/components/game/collection-book';
 import BattleArena from '@/components/game/battle-arena'; 
+import BombArena from '@/components/game/bomb-arena'; // 💣 추가됨
 import GachaShop from '@/components/game/gacha-shop';
 import MergeLab from '@/components/game/merge-lab';
 import BossRaid from '@/components/game/boss-raid';
@@ -39,10 +40,12 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
   const [showHatch, setShowHatch] = useState<Monster | null>(null);
   const [showCollection, setShowCollection] = useState(false);
   const [showBattle, setShowBattle] = useState(false); 
+  const [showBomb, setShowBomb] = useState(false); 
   const [showGachaShop, setShowGachaShop] = useState(false);
   const [showMergeLab, setShowMergeLab] = useState(false);
   const [showBossRaid, setShowBossRaid] = useState(false); 
-  const [battleProps, setBattleProps] = useState<{ initialOpponentId?: string, isHost?: boolean, roomId?: string } | null>(null);
+  
+  const [gameProps, setGameProps] = useState<{ initialOpponentId?: string, isHost?: boolean, roomId?: string } | null>(null);
 
   if (!currentUser) return null;
 
@@ -54,33 +57,39 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
 
   const enterBattle = () => {
     if (currentUser.coins >= 1) {
-      if(window.confirm("친구들과 대결하러 갈까요? (-1 코인)")) {
-        spendCoins(1);
-        setBattleProps({ isHost: true }); 
-        setShowBattle(true);
+      if(window.confirm("친구들과 1:1 대결을 할까요? (-1 코인)")) {
+        spendCoins(1); setGameProps({ isHost: true }); setShowBattle(true);
+      }
+    } else { alert("코인이 부족해! 수학 문제를 더 풀고 코인을 모아오자 📚"); }
+  };
+
+  const enterBombGame = () => {
+    if (currentUser.coins >= 1) {
+      if(window.confirm("2~4인 몬스터 폭탄 돌리기에 참가할까요? (-1 코인)")) {
+        spendCoins(1); setGameProps({ isHost: true }); setShowBomb(true);
       }
     } else { alert("코인이 부족해! 수학 문제를 더 풀고 코인을 모아오자 📚"); }
   };
 
   const handleAcceptInvite = () => {
     if (!incomingInvite) return;
-    setBattleProps({ 
+    setGameProps({ 
       initialOpponentId: incomingInvite.hostId, 
       isHost: false, 
       roomId: `${incomingInvite.hostId}_${currentUser.id}` 
     });
-    setShowBattle(true);
+    
+    if (incomingInvite.gameType === 'BOMB') {
+      setShowBomb(true);
+    } else {
+      setShowBattle(true);
+    }
     setIncomingInvite(null);
   };
 
   return (
     <main className="flex min-h-screen flex-col items-center bg-blue-50/50 p-4 pb-12 overflow-x-hidden relative">
-      
-      <BattleInviteAlert 
-        invite={incomingInvite} 
-        onAccept={handleAcceptInvite} 
-        onDecline={() => setIncomingInvite(null)} 
-      />
+      <BattleInviteAlert invite={incomingInvite} onAccept={handleAcceptInvite} onDecline={() => setIncomingInvite(null)} />
 
       {/* 상단 프로필 바 */}
       <div className="w-full max-w-md flex justify-between items-center bg-white p-3 rounded-full shadow-sm mb-6 mt-2 border border-blue-100 relative z-10">
@@ -137,7 +146,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
           <span className="text-xl">📚</span><h2 className="font-black text-gray-700 text-lg">수학 훈련소</h2>
         </div>
         <div className="flex flex-col gap-3">
-          {/* 덧셈 */}
           <div className="bg-white p-3 rounded-2xl shadow-sm border border-green-100 flex items-center">
             <div className="w-16 text-center text-2xl drop-shadow-md">➕</div>
             <div className="flex-1 grid grid-cols-3 gap-2">
@@ -146,7 +154,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
               <button onClick={() => onStartGame('ADD', 'LEVEL_3')} className="bg-green-500 hover:bg-green-600 text-white py-3 rounded-xl font-black text-sm shadow-sm">3단계</button>
             </div>
           </div>
-          {/* 뺄셈 */}
           <div className="bg-white p-3 rounded-2xl shadow-sm border border-orange-100 flex items-center">
             <div className="w-16 text-center text-2xl drop-shadow-md">➖</div>
             <div className="flex-1 grid grid-cols-3 gap-2">
@@ -155,7 +162,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
               <button onClick={() => onStartGame('SUB', 'LEVEL_3')} className="bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-xl font-black text-sm shadow-sm">3단계</button>
             </div>
           </div>
-          {/* 곱셈 */}
           <div className="bg-white p-3 rounded-2xl shadow-sm border border-purple-100 flex items-center">
             <div className="w-16 text-center text-2xl drop-shadow-md">✖️</div>
             <div className="flex-1 grid grid-cols-3 gap-2">
@@ -173,18 +179,26 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
           <span className="text-xl">🎮</span><h2 className="font-black text-gray-700 text-lg">모험 타운</h2>
         </div>
         
-        <button onClick={enterBossRaid} className="w-full bg-gradient-to-r from-red-600 via-orange-500 to-red-600 text-white font-black py-4 rounded-3xl shadow-[0_4px_0_rgba(153,27,27,1)] active:translate-y-1 active:shadow-none transition-all flex items-center justify-between px-6 mb-3">
+        <button onClick={enterBombGame} className="w-full bg-gradient-to-r from-red-500 to-orange-400 text-white font-black py-4 rounded-3xl shadow-[0_4px_0_rgba(153,27,27,1)] active:translate-y-1 active:shadow-none transition-all flex items-center justify-between px-6 mb-3 group">
           <div className="flex items-center gap-3">
-            <span className="text-4xl animate-pulse drop-shadow-lg">🐉</span>
+            <span className="text-4xl group-hover:scale-125 transition-transform drop-shadow-lg">💣</span>
+            <span className="text-xl tracking-wide">몬스터 폭탄 돌리기</span>
+          </div>
+          <span className="text-sm bg-red-900/40 px-3 py-1 rounded-full border border-red-300">🪙 -1</span>
+        </button>
+
+        <button onClick={enterBossRaid} className="w-full bg-gray-800 text-white font-black py-4 rounded-3xl shadow-[0_4px_0_rgba(31,41,55,1)] active:translate-y-1 active:shadow-none transition-all flex items-center justify-between px-6 mb-3">
+          <div className="flex items-center gap-3">
+            <span className="text-4xl animate-pulse drop-shadow-lg filter sepia">🐉</span>
             <span className="text-xl tracking-wide">월드 보스 레이드</span>
           </div>
-          <span className="text-sm bg-red-900/60 px-3 py-1 rounded-full border border-red-400">🪙 -1</span>
+          <span className="text-sm bg-gray-900 px-3 py-1 rounded-full border border-gray-600">🪙 -1</span>
         </button>
         
         <div className="grid grid-cols-2 gap-3 w-full">
           <button onClick={enterBattle} className="bg-blue-500 text-white font-black py-4 rounded-3xl shadow-[0_4px_0_rgba(29,78,216,1)] active:translate-y-1 active:shadow-none transition-all flex flex-col items-center gap-1 relative overflow-hidden group">
             <span className="text-3xl relative z-10">⚔️</span>
-            <span className="text-base mt-1 relative z-10">유저 대결</span>
+            <span className="text-base mt-1 relative z-10">1:1 결투장</span>
             {onlineUsers.length > 1 && <div className="absolute top-3 right-3 w-3 h-3 bg-green-400 rounded-full animate-ping border border-green-200"></div>}
           </button>
           <button onClick={() => setShowGachaShop(true)} className="bg-white text-gray-800 font-black py-4 rounded-3xl shadow-[0_4px_0_rgba(209,213,219,1)] active:translate-y-1 active:shadow-none border border-gray-200 transition-all flex flex-col items-center gap-1">
@@ -209,11 +223,23 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
       {showBattle && (
         <BattleArena 
           allMonsters={allMonsters}
-          onClose={() => { setShowBattle(false); setBattleProps(null); }} 
+          onClose={() => { setShowBattle(false); setGameProps(null); }} 
           onlineUsers={onlineUsers}
-          initialOpponentId={battleProps?.initialOpponentId}
-          isHost={battleProps?.isHost ?? true}
-          roomId={battleProps?.roomId}
+          initialOpponentId={gameProps?.initialOpponentId}
+          isHost={gameProps?.isHost ?? true}
+          roomId={gameProps?.roomId}
+        />
+      )}
+
+      {/* 💣 폭탄 게임 연결 */}
+      {showBomb && (
+        <BombArena
+          allMonsters={allMonsters}
+          onClose={() => { setShowBomb(false); setGameProps(null); }}
+          onlineUsers={onlineUsers}
+          initialOpponentId={gameProps?.initialOpponentId}
+          isHost={gameProps?.isHost ?? true}
+          roomId={gameProps?.roomId}
         />
       )}
     </main>
