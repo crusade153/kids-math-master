@@ -1,51 +1,48 @@
 // actions/user-actions.ts
 'use server';
 
-import { loadSheet } from '@/lib/google-sheets';
+import { supabase } from '@/lib/supabase';
 import { UserProfile } from '@/types/game';
 
-// 1. 모든 사용자 목록 가져오기
-export async function getUsers(): Promise<UserProfile[]> {
+export async function getUsers(): Promise<any[]> {
   try {
-    const doc = await loadSheet();
-    const sheet = doc.sheetsByTitle['User_DB'];
-    if (!sheet) return [];
+    const { data, error } = await supabase.from('users').select('*');
+    if (error) throw error;
 
-    const rows = await sheet.getRows();
-    return rows.map((row) => ({
-      id: row.get('사용자 ID'),
-      name: row.get('이름'),
-      email: row.get('구글 이메일'),
-      coins: parseInt(row.get('현재 코인') || '0', 10),
-      inventory: row.get('획득한 몬스터 (ID 목록)') ? row.get('획득한 몬스터 (ID 목록)').split(',').map((s: string) => s.trim()) : [],
-      lastLogin: row.get('마지막 접속일'),
-      score: parseInt(row.get('누적 학습 점수') || '0', 10),
+    return data.map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      coins: row.coins || 0,
+      inventory: row.inventory || [],
+      lastLogin: row.last_login,
+      score: row.score || 0,
+      // ⭐️ 일일 미션 데이터 추가
+      dailySolvedCount: row.daily_solved_count || 0,
+      claimedRewards: row.claimed_rewards || [],
     }));
   } catch (error) {
-    console.error('사용자 로딩 실패:', error);
+    console.error('유저 로딩 실패:', error);
     return [];
   }
 }
 
-// 2. 사용자 데이터 업데이트 (코인, 점수, 인벤토리)
-export async function syncUserProgress(userId: string, data: Partial<UserProfile>) {
+export async function syncUserProgress(userId: string, data: any) {
   try {
-    const doc = await loadSheet();
-    const sheet = doc.sheetsByTitle['User_DB'];
-    const rows = await sheet.getRows();
+    const updateData: any = {};
     
-    const userRow = rows.find((r) => r.get('사용자 ID') === userId);
-    if (!userRow) return;
-
-    if (data.coins !== undefined) userRow.set('현재 코인', data.coins);
-    if (data.score !== undefined) userRow.set('누적 학습 점수', data.score);
-    if (data.inventory !== undefined) userRow.set('획득한 몬스터 (ID 목록)', data.inventory.join(', '));
+    if (data.coins !== undefined) updateData.coins = data.coins;
+    if (data.score !== undefined) updateData.score = data.score;
+    if (data.inventory !== undefined) updateData.inventory = data.inventory;
+    // ⭐️ 일일 미션 데이터 DB 동기화
+    if (data.dailySolvedCount !== undefined) updateData.daily_solved_count = data.dailySolvedCount;
+    if (data.claimedRewards !== undefined) updateData.claimed_rewards = data.claimedRewards;
     
-    // 마지막 접속일 갱신
     const today = new Date().toISOString().split('T')[0];
-    userRow.set('마지막 접속일', today);
+    updateData.last_login = today;
 
-    await userRow.save();
+    const { error } = await supabase.from('users').update(updateData).eq('id', userId);
+    if (error) console.error('Supabase 데이터 업데이트 실패:', error);
   } catch (error) {
     console.error('데이터 저장 실패:', error);
   }

@@ -1,129 +1,85 @@
 // actions/boss-actions.ts
 'use server';
 
-import { loadSheet } from '@/lib/google-sheets';
+import { supabase } from '@/lib/supabase';
 import { getMonsters } from './game-actions';
 
-// Vercel 서버리스 환경 및 로컬에서 상태를 유지하기 위한 글로벌 객체 사용
-const globalForBoss = globalThis as unknown as { 
-  bossHp: number; 
-  bossMaxHp: number;
-  bossDate: string;
-  bossSeed: number;
-  bossKillCount: number; // ⭐️ 보스를 잡은 횟수 추가 (새로운 보스 등장을 위함)
-};
-
-// ⭐️ 매일 날짜가 바뀌었는지 체크하고 보스를 리셋하는 로직 (에너지 500,000으로 상향)
-async function checkAndResetDailyBoss() {
-  // 한국 시간 기준 오늘 날짜 문자열 생성
+async function checkAndGetBossState() {
   const today = new Date().toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' });
   
-  if (globalForBoss.bossDate !== today || !globalForBoss.bossMaxHp) {
-    globalForBoss.bossDate = today;
-    globalForBoss.bossMaxHp = 500000; // ⭐️ 요구사항: 에너지 500,000으로 고정
-    globalForBoss.bossHp = 500000;
-    globalForBoss.bossKillCount = 0;  // ⭐️ 매일 킬 카운트 초기화
-    
-    // 단순 문자열 해싱으로 오늘의 랜덤 시드값 생성
-    let hash = 0;
-    for (let i = 0; i < today.length; i++) {
-      hash = today.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    globalForBoss.bossSeed = Math.abs(hash);
+  // DB에서 보스 상태 불러오기
+  const { data: bossState, error } = await supabase.from('boss_state').select('*').eq('id', 1).single();
+  if (error || !bossState) throw new Error("보스 데이터를 불러올 수 없습니다.");
+
+  // 날짜가 바뀌었다면 (다음 날이 되었다면) 보스 초기화 (30만)
+  if (bossState.boss_date !== today) {
+    const { data: newState } = await supabase
+      .from('boss_state')
+      .update({ hp: 300000, max_hp: 300000, kill_count: 0, boss_date: today })
+      .eq('id', 1)
+      .select()
+      .single();
+    return newState;
   }
+  
+  return bossState;
 }
 
 export async function getBossStatus() {
-  await checkAndResetDailyBoss();
+  const state = await checkAndGetBossState();
   
   const allMonsters = await getMonsters();
-  // MYTHICAL(환상) 또는 LEGENDARY(전설) 포켓몬만 필터링
   const bossCandidates = allMonsters.filter(m => m.rarity === 'MYTHICAL' || m.rarity === 'LEGENDARY');
-  
-  // 만약 시트에 환상/전설이 없다면 전체에서 선택하도록 예외 처리
   const pool = bossCandidates.length > 0 ? bossCandidates : allMonsters;
   
-  // ⭐️ 오늘의 시드 + 킬 카운트를 조합하여, 죽일 때마다 새로운 보스가 나오도록 처리
-  const actualSeed = globalForBoss.bossSeed + (globalForBoss.bossKillCount || 0);
-  const bossIndex = actualSeed % pool.length;
-  const currentBoss = pool[bossIndex] || pool[0];
+  // 죽인 횟수에 따라 다른 보스 몬스터 등장
+  const bossIndex = (new Date().getDate() + state.kill_count) % pool.length;
+  const currentBoss = pool[bossIndex];
 
-  return {
-    hp: globalForBoss.bossHp,
-    maxHp: globalForBoss.bossMaxHp,
-    bossMonster: currentBoss // 클라이언트로 몬스터 정보 전달
-  };
+  return { hp: state.hp, maxHp: state.max_hp, bossMonster: currentBoss };
 }
 
 export async function attackBoss(damage: number) {
-  await checkAndResetDailyBoss();
-  globalForBoss.bossHp = Math.max(0, globalForBoss.bossHp - damage);
+  const state = await checkAndGetBossState();
+  const newHp = Math.max(0, state.hp - damage);
+  
+  // DB에 깎인 체력 저장
+  await supabase.from('boss_state').update({ hp: newHp }).eq('id', 1);
   
   const allMonsters = await getMonsters();
   const bossCandidates = allMonsters.filter(m => m.rarity === 'MYTHICAL' || m.rarity === 'LEGENDARY');
   const pool = bossCandidates.length > 0 ? bossCandidates : allMonsters;
-  
-  const actualSeed = globalForBoss.bossSeed + (globalForBoss.bossKillCount || 0);
-  const bossIndex = actualSeed % pool.length;
-  const currentBoss = pool[bossIndex] || pool[0];
+  const bossIndex = (new Date().getDate() + state.kill_count) % pool.length;
 
-  return {
-    hp: globalForBoss.bossHp,
-    maxHp: globalForBoss.bossMaxHp,
-    bossMonster: currentBoss
-  };
+  return { hp: newHp, maxHp: state.max_hp, bossMonster: pool[bossIndex] };
 }
 
-// 보스가 쓰러졌을 때 다시 부활시키는 함수
 export async function resetBoss() {
-  await checkAndResetDailyBoss();
+  const state = await checkAndGetBossState();
   
-  // ⭐️ 보스를 죽였으므로 킬 카운트 1 증가 -> 다음 보스는 다른 몬스터로 변경됨
-  globalForBoss.bossKillCount = (globalForBoss.bossKillCount || 0) + 1;
+  const newKillCount = state.kill_count + 1;
+  const newMaxHp = state.max_hp + 50000; // ⭐️ 죽일 때마다 에너지가 5만씩 증가!
   
-  globalForBoss.bossMaxHp = Math.floor(globalForBoss.bossMaxHp * 1.2); // 부활할 때마다 20%씩 강해짐
-  globalForBoss.bossHp = globalForBoss.bossMaxHp;
-  
-  const allMonsters = await getMonsters();
-  const bossCandidates = allMonsters.filter(m => m.rarity === 'MYTHICAL' || m.rarity === 'LEGENDARY');
-  const pool = bossCandidates.length > 0 ? bossCandidates : allMonsters;
-  
-  // 증가된 킬 카운트가 적용되어 새로운 보스 인덱스 계산
-  const actualSeed = globalForBoss.bossSeed + globalForBoss.bossKillCount;
-  const bossIndex = actualSeed % pool.length;
-  const currentBoss = pool[bossIndex] || pool[0];
-
-  return {
-    hp: globalForBoss.bossHp,
-    maxHp: globalForBoss.bossMaxHp,
-    bossMonster: currentBoss
-  };
+  // DB에 부활한 보스 상태 업데이트
+  await supabase
+    .from('boss_state')
+    .update({ hp: newMaxHp, max_hp: newMaxHp, kill_count: newKillCount })
+    .eq('id', 1);
+    
+  return getBossStatus();
 }
 
-// 🎁 보스를 잡았을 때 전 서버 유저에게 200코인(기존 300->200) 일괄 지급
+// 레이드 보상 로직 (기존과 동일)
 export async function distributeBossKillReward(killerId: string) {
   try {
-    const doc = await loadSheet();
-    const sheet = doc.sheetsByTitle['User_DB'];
-    if (!sheet) return;
-    
-    const rows = await sheet.getRows();
-    
-    // 다중 저장을 위해 Promise.all 사용 (속도 최적화)
-    const savePromises = rows.map(async (row) => {
-      const id = row.get('사용자 ID');
-      // 막타를 친 유저(killerId)는 브라우저 화면에서 직접 코인을 추가하므로 DB 저장에서 제외
-      if (id !== killerId) {
-        const currentCoins = parseInt(row.get('현재 코인') || '0', 10);
-        // ⭐️ 보상 200코인으로 변경
-        row.set('현재 코인', currentCoins + 200);
-        return row.save();
-      }
-    }).filter(Boolean);
+    const { data: users } = await supabase.from('users').select('id, coins').neq('id', killerId);
+    if (!users) return;
 
+    const savePromises = users.map((user) => 
+      supabase.from('users').update({ coins: (user.coins || 0) + 200 }).eq('id', user.id)
+    );
     await Promise.all(savePromises);
-    console.log('--- 전 서버 유저 코인 지급 완료 ---');
   } catch (error) {
-    console.error('레이드 보상 지급 실패:', error);
+    console.error('보상 지급 실패:', error);
   }
 }
