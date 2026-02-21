@@ -11,7 +11,7 @@ import MotionCard from '@/components/ui/motion-card';
 import EggHatch from '@/components/game/egg-hatch';
 import CollectionBook from '@/components/game/collection-book';
 import BattleArena from '@/components/game/battle-arena'; 
-import BombArena from '@/components/game/bomb-arena'; // 💣 추가됨
+import BombArena from '@/components/game/bomb-arena'; 
 import GachaShop from '@/components/game/gacha-shop';
 import MergeLab from '@/components/game/merge-lab';
 import BossRaid from '@/components/game/boss-raid';
@@ -73,10 +73,12 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
 
   const handleAcceptInvite = () => {
     if (!incomingInvite) return;
+    
     setGameProps({ 
       initialOpponentId: incomingInvite.hostId, 
       isHost: false, 
-      roomId: `${incomingInvite.hostId}_${currentUser.id}` 
+      // ⭐️ 글로벌 로비에서 받아온 정확한 roomId를 전달합니다.
+      roomId: incomingInvite.roomId || `${incomingInvite.hostId}_${currentUser.id}` 
     });
     
     if (incomingInvite.gameType === 'BOMB') {
@@ -91,7 +93,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
     <main className="flex min-h-screen flex-col items-center bg-blue-50/50 p-4 pb-12 overflow-x-hidden relative">
       <BattleInviteAlert invite={incomingInvite} onAccept={handleAcceptInvite} onDecline={() => setIncomingInvite(null)} />
 
-      {/* 상단 프로필 바 */}
       <div className="w-full max-w-md flex justify-between items-center bg-white p-3 rounded-full shadow-sm mb-6 mt-2 border border-blue-100 relative z-10">
         <div className="flex items-center gap-2 font-black text-gray-700 ml-2">
           <span className="text-xl">👦</span> {currentUser.name}
@@ -110,7 +111,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
         </h1>
       </MotionCard>
 
-      {/* 일일 미션 UI */}
       <div className="w-full max-w-md bg-white rounded-3xl shadow-sm p-5 mb-6 border border-gray-100 relative z-10">
         <div className="flex justify-between items-end mb-3">
           <h3 className="font-black text-indigo-900 text-lg flex items-center gap-2"><span>📅</span> 오늘의 미션</h3>
@@ -140,7 +140,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
         </div>
       </div>
       
-      {/* 학습 구역 */}
       <div className="w-full max-w-md mb-8 relative z-10">
         <div className="flex items-center gap-2 mb-3 px-2">
           <span className="text-xl">📚</span><h2 className="font-black text-gray-700 text-lg">수학 훈련소</h2>
@@ -173,7 +172,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
         </div>
       </div>
 
-      {/* 모험 타운 */}
       <div className="w-full max-w-md relative z-10">
         <div className="flex items-center gap-2 mb-3 px-2">
           <span className="text-xl">🎮</span><h2 className="font-black text-gray-700 text-lg">모험 타운</h2>
@@ -213,7 +211,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
         </div>
       </div>
 
-      {/* 모달 연동 */}
       {showGachaShop && <GachaShop onClose={() => setShowGachaShop(false)} onHatch={(monster) => setShowHatch(monster)} />}
       {showMergeLab && <MergeLab monsters={allMonsters} onClose={() => setShowMergeLab(false)} />}
       {showCollection && <CollectionBook monsters={allMonsters} inventory={currentUser.inventory} onClose={() => setShowCollection(false)} />}
@@ -231,7 +228,6 @@ export default function TownView({ allMonsters, onStartGame }: TownViewProps) {
         />
       )}
 
-      {/* 💣 폭탄 게임 연결 */}
       {showBomb && (
         <BombArena
           allMonsters={allMonsters}

@@ -5,7 +5,7 @@ import { UserProfile } from '@/types/game';
 
 export function useGlobalLobby(currentUser: UserProfile | null) {
   const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
-  const [incomingInvite, setIncomingInvite] = useState<{ hostId: string, hostName: string, gameType: 'ARENA' | 'BOMB' } | null>(null);
+  const [incomingInvite, setIncomingInvite] = useState<{ hostId: string, hostName: string, gameType: 'ARENA' | 'BOMB', roomId?: string } | null>(null);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -24,7 +24,8 @@ export function useGlobalLobby(currentUser: UserProfile | null) {
         setIncomingInvite({ 
           hostId: payload.payload.hostId, 
           hostName: payload.payload.hostName,
-          gameType: payload.payload.gameType || 'ARENA'
+          gameType: payload.payload.gameType || 'ARENA',
+          roomId: payload.payload.roomId
         });
       }
     });

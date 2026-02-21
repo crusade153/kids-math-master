@@ -8,7 +8,6 @@ import { Monster, BombGameState, BombPlayer, BombCard, BombCardType, RpsRoundRes
 import { useGameStore } from '@/store/game-store';
 import { getUsers } from '@/actions/user-actions';
 import { supabase } from '@/lib/supabase';
-import confetti from 'canvas-confetti';
 
 interface BombArenaProps {
   allMonsters: Monster[];
@@ -76,7 +75,7 @@ const drawCard = (monsters: Monster[]): BombCard => {
   const rand = Math.floor(Math.random() * 100) + 1;
   let targetEffect: 'PLUS' | 'MINUS' | 'PASS' | 'REVERSE' | 'JOKER' = 'PLUS';
 
-  if (rand <= 75) targetEffect = 'PLUS';         // 75% (요청 70% + 빈 확률 5% 보정)
+  if (rand <= 75) targetEffect = 'PLUS';         // 75%
   else if (rand <= 85) targetEffect = 'MINUS';   // 10%
   else if (rand <= 92) targetEffect = 'REVERSE'; // 7%
   else if (rand <= 97) targetEffect = 'PASS';    // 5%
@@ -93,7 +92,7 @@ const drawCard = (monsters: Monster[]): BombCard => {
     pool = monsters.filter(m => !['물', '풀', '얼음', '독', '에스퍼', '바위', '강철', '땅'].includes(m.type?.split('/')[0].trim()) && m.rarity !== 'LEGENDARY' && m.rarity !== 'MYTHICAL');
   }
 
-  // 예외 방지: DB에 해당 속성이 없을 경우 전체 몬스터에서 충당
+  // 예외 방지
   if (pool.length === 0) pool = monsters;
 
   const m = pool[Math.floor(Math.random() * pool.length)];
@@ -113,12 +112,15 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   const { currentUser } = useGameStore();
   const [users, setUsers] = useState<{id:string, name:string}[]>([]);
   
+  const [activeRoomId] = useState(() => roomId || `bomb_${currentUser?.id}_${Math.random().toString(36).substring(7)}`);
+  
   const [gameState, setGameState] = useState<BombGameState>({
     step: 'LOBBY', maxPlayers: 4, players: [], turnIndex: 0, direction: 1, gauge: 0, boss: null, winnerName: null,
     rpsQueue: [], rankedPlayers: [], rpsRoundResults: [], rpsMsg: '가위바위보를 선택하세요!', lastActionMsg: ''
   });
   
   const [channel, setChannel] = useState<any>(null);
+  const channelRef = useRef<any>(null); // ⭐️ 통신 프리징(멈춤) 해결을 위한 핵심 Ref
   const [shakeIntensity, setShakeIntensity] = useState(0); 
   
   const [jokerSelection, setJokerSelection] = useState<{ active: boolean, cardId: string } | null>(null);
@@ -128,16 +130,17 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   const stateRef = useRef(gameState); 
   stateRef.current = gameState;
 
+  // 🎵 90이상 시 재생할 긴장감 BGM 세팅
   useEffect(() => {
     bgmRef.current = new Audio('/sounds/tension-bgm.mp3'); 
     bgmRef.current.loop = true;
     return () => {
       if (bgmRef.current) { bgmRef.current.pause(); bgmRef.current.currentTime = 0; }
-      if (channel) supabase.removeChannel(channel);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel]);
+  }, []);
 
+  // 🎵 BGM 자동 On/Off 및 게이지별 화면색상/사운드 처리
   useEffect(() => {
     if (gameState.step === 'PLAYING') {
       if (gameState.gauge >= 90) {
@@ -153,10 +156,10 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
 
   useEffect(() => { getUsers().then(setUsers); }, []);
 
+  // ⭐️ 멀티플레이 네트워크 연결 (오류 완벽 해결)
   useEffect(() => {
     if (!currentUser) return;
-    const roomName = roomId || `bomb_${currentUser.id}_${Math.random().toString(36).substring(7)}`;
-    const chan = supabase.channel(roomName, { config: { presence: { key: currentUser.id } } });
+    const chan = supabase.channel(activeRoomId, { config: { presence: { key: currentUser.id } } });
 
     chan.on('broadcast', { event: 'SYNC_STATE' }, (payload) => {
       if (!isHost) setGameState(payload.payload.state);
@@ -173,25 +176,35 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
           const hostPlayer: BombPlayer = { id: currentUser.id, name: currentUser.name, isBot: false, hand: Array.from({length: 5}).map(() => drawCard(allMonsters)), isEliminated: false };
           updateState({ players: [hostPlayer] });
         } else if (initialOpponentId) {
-          chan.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'JOIN', data: { id: currentUser.id, name: currentUser.name } } });
+          channelRef.current?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'JOIN', data: { id: currentUser.id, name: currentUser.name } } });
         }
       }
     });
+
     setChannel(chan);
+    channelRef.current = chan; // 채널 객체 동기화
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ⭐️ 방장이 상태를 뿌릴 때 무조건 최신 채널(channelRef.current)을 거치도록 수정
   const updateState = (updates: Partial<BombGameState>) => {
     const newState = { ...stateRef.current, ...updates };
     setGameState(newState);
-    if (channel && isHost) channel.send({ type: 'broadcast', event: 'SYNC_STATE', payload: { state: newState } });
+    if (channelRef.current && isHost) {
+      channelRef.current.send({ type: 'broadcast', event: 'SYNC_STATE', payload: { state: newState } });
+    }
   };
 
   const handlePlayerAction = (type: string, data: any) => {
     const state = stateRef.current;
     if (type === 'JOIN' && state.step === 'LOBBY' && state.players.length < state.maxPlayers) {
       const newPlayer: BombPlayer = { id: data.id, name: data.name, isBot: false, hand: Array.from({length: 5}).map(() => drawCard(allMonsters)), isEliminated: false };
-      if (!state.players.find(p => p.id === data.id)) updateState({ players: [...state.players, newPlayer] });
+      if (!state.players.find(p => p.id === data.id)) {
+        updateState({ players: [...state.players, newPlayer] });
+      } else {
+        // 이미 들어온 게스트가 새로고침 등으로 다시 보낼 때 동기화 
+        channelRef.current?.send({ type: 'broadcast', event: 'SYNC_STATE', payload: { state: stateRef.current } });
+      }
     } else if (type === 'RPS' && state.step === 'RPS') {
       const updatedPlayers = state.players.map(p => p.id === data.id ? { ...p, rpsChoice: data.choice as any } : p);
       updateState({ players: updatedPlayers });
@@ -199,6 +212,14 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     } else if (type === 'PLAY_CARD' && state.step === 'PLAYING') {
       processCardPlay(data.playerId, data.cardId, data.jokerValue);
     }
+  };
+
+  const invitePlayer = (uId: string) => {
+    supabase.channel('global_lobby').send({
+      type: 'broadcast', event: 'battle_invite',
+      payload: { hostId: currentUser?.id, hostName: currentUser?.name, targetId: uId, gameType: 'BOMB', roomId: activeRoomId }
+    });
+    alert('초대장을 보냈습니다!');
   };
 
   const fillWithBotsAndStart = () => {
@@ -217,25 +238,23 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     const currentGroup = gameState.rpsQueue[0];
     if (!currentGroup) return;
 
-    // 만약 현재 가위바위보 그룹이 100% 봇으로만 이루어져 있다면, 1.5초 뒤 자동 처리
     const allBots = currentGroup.every(id => gameState.players.find(p => p.id === id)?.isBot);
     
     if (allBots) {
-      const timer = setTimeout(() => {
-        checkAllRPSReady(gameState.players);
-      }, 1500);
+      const timer = setTimeout(() => { checkAllRPSReady(gameState.players); }, 1500);
       return () => clearTimeout(timer);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.step, gameState.rpsQueue, isHost]);
 
+  // ⭐️ 게스트가 클릭 시 무조건 최신 채널(channelRef.current)로 발송
   const submitRPS = (choice: 'ROCK' | 'PAPER' | 'SCISSORS') => {
     if (isHost) {
       const updated = stateRef.current.players.map(p => p.id === currentUser?.id ? { ...p, rpsChoice: choice } : p);
       updateState({ players: updated });
       checkAllRPSReady(updated);
     } else {
-      channel?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'RPS', data: { id: currentUser?.id, choice } } });
+      channelRef.current?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'RPS', data: { id: currentUser?.id, choice } } });
     }
   };
 
@@ -321,7 +340,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   const executePlay = (cardId: string, jokerValue?: number) => {
     setJokerSelection(null);
     if (isHost) processCardPlay(currentUser!.id, cardId, jokerValue);
-    else channel?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'PLAY_CARD', data: { playerId: currentUser!.id, cardId, jokerValue } } });
+    else channelRef.current?.send({ type: 'broadcast', event: 'PLAYER_ACTION', payload: { actionType: 'PLAY_CARD', data: { playerId: currentUser!.id, cardId, jokerValue } } });
   };
 
   const processCardPlay = (playerId: string, cardId: string, jokerValue?: number) => {
@@ -409,7 +428,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
           processCardPlay(currentP.id, card.id, jokerVal);
         } else {
           const sorted = [...currentP.hand].sort((a,b) => a.value - b.value);
-          processCardPlay(currentP.id, sorted[0].id);
+          processCardPlay(currentP.id, sorted[0].id); // 패배 확정
         }
       }, 2500); 
       return () => clearTimeout(timer);
@@ -425,6 +444,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     return 'bg-gray-900/95';
   };
 
+  const isRoomFull = gameState.players.length >= gameState.maxPlayers;
   const myPlayerInfo = gameState.players.find(p => p.id === currentUser?.id);
   const isMyTurn = gameState.step === 'PLAYING' && gameState.players[gameState.turnIndex]?.id === currentUser?.id;
   const isRPSActive = gameState.rpsQueue[0]?.includes(currentUser?.id || '');
@@ -516,7 +536,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                   {gameState.players.map(p => <div key={p.id} className="bg-gray-700 p-3 rounded-lg font-bold">✅ {p.name} {p.id===currentUser?.id && '(나)'}</div>)}
                 </div>
                 <button onClick={fillWithBotsAndStart} className="w-full bg-red-600 hover:bg-red-500 py-4 rounded-2xl font-black text-xl shadow-lg active:scale-95 transition-all">
-                  빈자리 로봇 채우고 시작 🚀
+                  {isRoomFull ? '게임 시작 🚀' : '빈자리 로봇 채우고 시작 🚀'}
                 </button>
               </>
             ) : (
@@ -610,14 +630,13 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                 {gameState.lastActionMsg || '게임을 시작합니다!'}
               </div>
 
+              {/* ⭐️ 태블릿 완벽 호환 이미지 (<img> 태그 사용) */}
               <div className={`relative w-48 h-48 md:w-64 md:h-64 rounded-full flex items-center justify-center transition-all duration-300 mt-16 ${gameState.gauge >= 90 ? 'scale-125 drop-shadow-[0_0_80px_rgba(239,68,68,1)]' : gameState.gauge >= 70 ? 'scale-110 drop-shadow-[0_0_40px_rgba(250,204,21,0.8)]' : 'drop-shadow-[0_0_20px_rgba(255,255,255,0.2)]'}`}>
                 {gameState.boss?.image && (
-                  <Image 
-                    src={encodeURI(gameState.boss.image)} 
+                  <img 
+                    src={gameState.boss.image} 
                     alt="Boss" 
-                    fill 
-                    unoptimized={true} 
-                    className="object-contain z-10 pointer-events-none" 
+                    className="absolute inset-0 w-full h-full object-contain z-10 pointer-events-none" 
                   />
                 )}
                 <div className="absolute inset-0 border-[10px] border-dashed border-white/50 rounded-full animate-[spin_6s_linear_infinite]" style={{ animationDirection: gameState.direction === 1 ? 'normal' : 'reverse' }} />
@@ -672,13 +691,12 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                             </span>
                           </div>
 
-                          <div className="relative w-full flex-1 mt-1 mb-1 pointer-events-none">
-                            <Image 
-                              src={encodeURI(card.image)} 
+                          {/* ⭐️ 태블릿 완벽 호환 이미지 (<img> 태그 사용) */}
+                          <div className="relative w-full flex-1 mt-1 mb-1 pointer-events-none flex justify-center items-center">
+                            <img 
+                              src={card.image} 
                               alt={card.name} 
-                              fill 
-                              unoptimized={true} 
-                              className="object-contain drop-shadow-md" 
+                              className="w-full h-full object-contain drop-shadow-md" 
                             />
                           </div>
 
