@@ -120,11 +120,13 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   });
   
   const [channel, setChannel] = useState<any>(null);
-  const channelRef = useRef<any>(null); // ⭐️ 통신 프리징(멈춤) 해결을 위한 핵심 Ref
+  const channelRef = useRef<any>(null); 
   const [shakeIntensity, setShakeIntensity] = useState(0); 
   
   const [jokerSelection, setJokerSelection] = useState<{ active: boolean, cardId: string } | null>(null);
   const [jokerInput, setJokerInput] = useState<number>(75);
+
+  const [isSpectating, setIsSpectating] = useState(false); // ⭐️ 관전 모드 상태 추가
 
   const bgmRef = useRef<HTMLAudioElement | null>(null);
   const stateRef = useRef(gameState); 
@@ -156,7 +158,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
 
   useEffect(() => { getUsers().then(setUsers); }, []);
 
-  // ⭐️ 멀티플레이 네트워크 연결 (오류 완벽 해결)
+  // ⭐️ 멀티플레이 네트워크 연결
   useEffect(() => {
     if (!currentUser) return;
     const chan = supabase.channel(activeRoomId, { config: { presence: { key: currentUser.id } } });
@@ -182,11 +184,10 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     });
 
     setChannel(chan);
-    channelRef.current = chan; // 채널 객체 동기화
+    channelRef.current = chan;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ⭐️ 방장이 상태를 뿌릴 때 무조건 최신 채널(channelRef.current)을 거치도록 수정
   const updateState = (updates: Partial<BombGameState>) => {
     const newState = { ...stateRef.current, ...updates };
     setGameState(newState);
@@ -202,7 +203,6 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       if (!state.players.find(p => p.id === data.id)) {
         updateState({ players: [...state.players, newPlayer] });
       } else {
-        // 이미 들어온 게스트가 새로고침 등으로 다시 보낼 때 동기화 
         channelRef.current?.send({ type: 'broadcast', event: 'SYNC_STATE', payload: { state: stateRef.current } });
       }
     } else if (type === 'RPS' && state.step === 'RPS') {
@@ -232,7 +232,7 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     updateState({ players: currentPlayers, step: 'RPS', rpsQueue: [currentPlayers.map(p => p.id)], rankedPlayers: [], rpsMsg: '가위바위보를 선택하세요!' });
   };
 
-  // ================= ✌️✊🖐 가위바위보 및 봇 끼임 방지 로직 =================
+  // ================= ✌️✊🖐 가위바위보 로직 =================
   useEffect(() => {
     if (!isHost || gameState.step !== 'RPS') return;
     const currentGroup = gameState.rpsQueue[0];
@@ -247,7 +247,6 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.step, gameState.rpsQueue, isHost]);
 
-  // ⭐️ 게스트가 클릭 시 무조건 최신 채널(channelRef.current)로 발송
   const submitRPS = (choice: 'ROCK' | 'PAPER' | 'SCISSORS') => {
     if (isHost) {
       const updated = stateRef.current.players.map(p => p.id === currentUser?.id ? { ...p, rpsChoice: choice } : p);
@@ -382,11 +381,11 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
     const updatedPlayers = [...state.players];
     let finalActionMsg = actionMsg;
     
-    // 99 초과 (100 이상) 시 패배 처리
+    // ⭐️ 99 초과 (100 이상) 시 패배 처리 및 99 연속 진행 로직 적용
     if (newGauge > 99) {
       updatedPlayers[playerIndex] = { ...player, isEliminated: true, hand: newHand };
-      finalActionMsg = `💥 ${player.name} 폭발! (100 도달)`;
-      newGauge = 50; 
+      finalActionMsg = `💥 ${player.name} 폭발! (100 초과)`;
+      newGauge = 99; // 50으로 리셋하지 않고 99부터 극한의 긴장감으로 연속 진행
       playSynth('bomb');
     } else {
       updatedPlayers[playerIndex] = { ...player, hand: newHand };
@@ -424,17 +423,40 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
 
         if (safeCards.length > 0) {
           const card = safeCards[Math.floor(Math.random() * safeCards.length)];
-          const jokerVal = card.cardType === 'JOKER' ? Math.floor(Math.random() * 31) + 60 : undefined; // 60~90
+          const jokerVal = card.cardType === 'JOKER' ? Math.floor(Math.random() * 31) + 60 : undefined;
           processCardPlay(currentP.id, card.id, jokerVal);
         } else {
           const sorted = [...currentP.hand].sort((a,b) => a.value - b.value);
-          processCardPlay(currentP.id, sorted[0].id); // 패배 확정
+          processCardPlay(currentP.id, sorted[0].id);
         }
       }, 2500); 
       return () => clearTimeout(timer);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.turnIndex, gameState.step, isHost]);
+
+  // 🧑 ⭐️ 실제 유저(나) 자동 패배 로직 (alert 통신 블로킹 완벽 해결)
+  useEffect(() => {
+    if (gameState.step !== 'PLAYING') return;
+
+    const currentP = gameState.players[gameState.turnIndex];
+    if (currentP && !currentP.isBot && currentP.id === currentUser?.id && !currentP.isEliminated) {
+      const safeCards = currentP.hand.filter(c => {
+        if (c.cardType === 'JOKER' || c.cardType === 'REVERSE' || c.cardType === 'PASS') return true;
+        return gameState.gauge + c.value <= 99;
+      });
+
+      if (safeCards.length === 0) {
+        // 브라우저를 멈추게 하는 alert 제거 -> 자연스러운 2초 후 자동 폭발 연출로 변경
+        const timer = setTimeout(() => {
+          const sorted = [...currentP.hand].sort((a,b) => a.value - b.value);
+          executePlay(sorted[0].id);
+        }, 2000); 
+        return () => clearTimeout(timer);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.turnIndex, gameState.step, gameState.gauge]);
 
   const getBgClass = () => {
     if (gameState.step !== 'PLAYING') return 'bg-gray-900/95';
@@ -455,15 +477,15 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
       className={`fixed inset-0 z-[90] flex flex-col items-center justify-center p-4 backdrop-blur-xl touch-none overflow-hidden text-white font-sans transition-colors duration-300 ${getBgClass()}`}
     >
       
-      {/* 💥 패배자 관전 전환 모달 */}
+      {/* 💥 패배자 관전 전환 모달 (⭐️ 관전모드 상태 반영하여 정상적으로 닫히도록 수정) */}
       <AnimatePresence>
-        {myPlayerInfo?.isEliminated && gameState.step === 'PLAYING' && (
+        {myPlayerInfo?.isEliminated && gameState.step === 'PLAYING' && !isSpectating && (
           <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center p-6 text-center">
             <div className="text-9xl mb-6 animate-bounce">💥</div>
             <h2 className="text-5xl font-black text-red-500 mb-4">앗! 폭발해버렸어요!</h2>
             <p className="text-gray-300 text-xl font-bold mb-12">99를 초과하여 게임에서 패배했습니다.</p>
             <div className="flex gap-4">
-              <button onClick={() => updateState({})} className="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-xl shadow-xl active:scale-95 transition-all">
+              <button onClick={() => setIsSpectating(true)} className="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-xl shadow-xl active:scale-95 transition-all">
                 👀 남은 게임 관전하기
               </button>
               <button onClick={onClose} className="px-8 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-2xl font-black text-xl shadow-xl active:scale-95 transition-all">
@@ -630,7 +652,6 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                 {gameState.lastActionMsg || '게임을 시작합니다!'}
               </div>
 
-              {/* ⭐️ 태블릿 완벽 호환 이미지 (<img> 태그 사용) */}
               <div className={`relative w-48 h-48 md:w-64 md:h-64 rounded-full flex items-center justify-center transition-all duration-300 mt-16 ${gameState.gauge >= 90 ? 'scale-125 drop-shadow-[0_0_80px_rgba(239,68,68,1)]' : gameState.gauge >= 70 ? 'scale-110 drop-shadow-[0_0_40px_rgba(250,204,21,0.8)]' : 'drop-shadow-[0_0_20px_rgba(255,255,255,0.2)]'}`}>
                 {gameState.boss?.image && (
                   <img 
@@ -691,7 +712,6 @@ export default function BombArena({ allMonsters, onClose, onlineUsers, initialOp
                             </span>
                           </div>
 
-                          {/* ⭐️ 태블릿 완벽 호환 이미지 (<img> 태그 사용) */}
                           <div className="relative w-full flex-1 mt-1 mb-1 pointer-events-none flex justify-center items-center">
                             <img 
                               src={card.image} 
